@@ -1,0 +1,56 @@
+name: evse_app
+description: A new Flutter EVSE BLE tester app.
+
+publish_to: "none"
+
+version: 1.0.0+1
+
+environment:
+  sdk: ">=3.0.0 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  cupertino_icons: ^1.0.8
+  flutter_reactive_ble: ^5.0.2
+  shared_preferences: ^2.2.2
+  permission_handler: ^11.3.1
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+
+  flutter_lints: ^4.0.0
+
+  # 🔥 APP ICON GENERATOR
+  flutter_launcher_icons: ^0.13.1
+
+  # 🚀 SPLASH SCREEN GENERATOR
+  flutter_native_splash: ^2.4.0
+
+flutter:
+  uses-material-design: true
+
+  assets:
+    - assets/icon/
+    - assets/splash/
+
+# 🔥 APP ICON CONFIG
+flutter_launcher_icons:
+  android: true
+  ios: true
+  image_path: assets/icon/emc_icon.png
+  min_sdk_android: 21
+
+# 🚀 SPLASH SCREEN CONFIG
+flutter_native_splash:
+  color: "#4FC3F7" # Sky blue
+  image: assets/splash/splash.png
+
+  android: true
+  ios: true
+
+  android_12:
+    color: "#4FC3F7"
+    image: assets/splash/splash.png
