@@ -1,7 +1,15 @@
 import 'dart:async';
-import 'dart:convert';
 import 'package:flutter_reactive_ble/flutter_reactive_ble.dart';
 import '../config/evse_config.dart';
+
+/// =====================================================
+/// BLE SERVICE — TRANSPORT LAYER ONLY
+/// -----------------------------------------------------
+/// - No UI logic
+/// - No Excel logic
+/// - No simulator
+/// - Scan → Verify → Communicate
+/// =====================================================
 
 class BleService {
   BleService._internal();
@@ -9,20 +17,20 @@ class BleService {
 
   final FlutterReactiveBle _ble = FlutterReactiveBle();
 
-  // 🔒 KEEP CONNECTION ALIVE (CRITICAL FIX)
   StreamSubscription<ConnectionStateUpdate>? _connectionSub;
 
   // ================= SCAN =================
+  /// Scans ONLY for EVSE devices (by service UUID)
   Stream<DiscoveredDevice> scanDevices() {
     return _ble.scanForDevices(
-      withServices: const [],
+      withServices: const [], // ← no filter
       scanMode: ScanMode.lowLatency,
     );
   }
 
-  // ================= CONNECT (FIXED) =================
+  // ================= CONNECT =================
+  /// Connects and verifies EVSE service presence
   Stream<ConnectionStateUpdate> connectToDevice(String deviceId) {
-    // cancel any previous connection
     _connectionSub?.cancel();
 
     final stream = _ble.connectToDevice(
@@ -30,16 +38,54 @@ class BleService {
       connectionTimeout: const Duration(seconds: 10),
     );
 
-    // 🔑 KEEP LISTENING — DO NOT REMOVE
-    _connectionSub = stream.listen((update) {
-      // you can log if needed
-      // print('[BLE] ${update.connectionState}');
-    });
-
+    _connectionSub = stream.listen((_) {});
     return stream;
   }
 
-  // ================= WRITE STRING =================
+  Future<void> verifyEvse(String deviceId) async {
+    // ---- First attempt ----
+    var services = await _ble.discoverServices(deviceId);
+
+    bool hasEvseService = services.any(
+          (s) => s.serviceId == EVSEConfig.serviceUuid,
+    );
+
+    if (hasEvseService) return;
+
+    // ---- Android BLE tolerance: wait and retry once ----
+    await Future.delayed(const Duration(milliseconds: 700));
+
+    services = await _ble.discoverServices(deviceId);
+
+    hasEvseService = services.any(
+          (s) => s.serviceId == EVSEConfig.serviceUuid,
+    );
+
+    if (!hasEvseService) {
+      throw Exception('Not a valid EVSE device');
+    }
+  }
+
+  // ================= WRITE CONFIG (BINARY) =================
+  /// Writes a binary CONFIG packet to chargerType characteristic
+  Future<void> writeConfigPacket(
+      String deviceId,
+      List<int> packet,
+      ) async {
+    final characteristic = QualifiedCharacteristic(
+      deviceId: deviceId,
+      serviceId: EVSEConfig.serviceUuid,
+      characteristicId: EVSEConfig.chargerTypeUuid,
+    );
+
+    await _ble.writeCharacteristicWithResponse(
+      characteristic,
+      value: packet,
+    );
+  }
+
+  // ================= WRITE IDENTIFICATION =================
+  /// Writes string identification fields (e.g., Serial)
   Future<void> writeStringCharacteristic(
       String deviceId,
       Uuid characteristicUuid,
@@ -51,49 +97,28 @@ class BleService {
       characteristicId: characteristicUuid,
     );
 
-    final data = utf8.encode(value);
-
-    // DEBUG (KEEP THIS)
-    print(
-      '[BLE WRITE] ${characteristicUuid.toString()} -> "$value" (${data.length} bytes)',
-    );
-
     await _ble.writeCharacteristicWithResponse(
       characteristic,
-      value: data,
+      value: value.codeUnits,
     );
-
-    print('[BLE WRITE OK]');
   }
 
-  // ================= RAW SUBSCRIBE =================
-  Stream<List<int>> subscribeRawCharacteristic(
-      String deviceId,
-      Uuid characteristicUuid,
-      ) {
+  // ================= STATUS SUBSCRIBE =================
+  /// Subscribes to EVSE live status (notify-only)
+  Stream<List<int>> subscribeStatus(String deviceId) {
     final characteristic = QualifiedCharacteristic(
       deviceId: deviceId,
       serviceId: EVSEConfig.serviceUuid,
-      characteristicId: characteristicUuid,
+      characteristicId: EVSEConfig.chargingStatusUuid,
     );
 
     return _ble.subscribeToCharacteristic(characteristic);
   }
 
-  // ================= STATUS SUBSCRIBE =================
-  Stream<int> subscribeStatus(
-      String deviceId,
-      Uuid characteristicUuid,
-      ) {
-    final characteristic = QualifiedCharacteristic(
-      deviceId: deviceId,
-      serviceId: EVSEConfig.serviceUuid,
-      characteristicId: characteristicUuid,
-    );
-
-    return _ble
-        .subscribeToCharacteristic(characteristic)
-        .where((data) => data.isNotEmpty)
-        .map((data) => data.first);
+  // ================= DISCONNECT =================
+  void disconnect() {
+    _connectionSub?.cancel();
+    _connectionSub = null;
   }
 }
+

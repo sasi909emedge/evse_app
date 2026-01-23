@@ -1,37 +1,45 @@
 import 'package:flutter_reactive_ble/flutter_reactive_ble.dart';
 
+/// =====================================================
+/// EVSE BLE UUID CONTRACT
+/// -----------------------------------------------------
+/// - MUST match ESP-IDF exactly
+/// - ONLY Excel-backed + ESP-implemented UUIDs live here
+/// - No simulator
+/// - No unused characteristics
+/// =====================================================
+
 class EVSEConfig {
-  // ================= PRIMARY SERVICE =================
+  /// ================= PRIMARY SERVICE =================
+  /// EVSE Primary Service UUID
   static final Uuid serviceUuid =
   Uuid.parse("12345678-1234-5678-1234-56789abcdef0");
 
-  // ================= IDENTIFICATION =================
+  /// ================= IDENTIFICATION =================
+  /// Serial Number (Read / Write)
   static final Uuid serialUuid =
   Uuid.parse("12345678-1234-5678-1234-56789abcdef1");
-  static final Uuid nameUuid =
-  Uuid.parse("12345678-1234-5678-1234-56789abcdef2");
-  static final Uuid vendorUuid =
-  Uuid.parse("12345678-1234-5678-1234-56789abcdef3");
-  static final Uuid modelUuid =
-  Uuid.parse("12345678-1234-5678-1234-56789abcdef4");
-  static final Uuid commissionedByUuid =
-  Uuid.parse("12345678-1234-5678-1234-56789abcdef5");
-  static final Uuid commissionedDateUuid =
-  Uuid.parse("12345678-1234-5678-1234-56789abcdef6");
-  static final Uuid locationUuid =
-  Uuid.parse("12345678-1234-5678-1234-56789abcdef8");
 
-  // ================= LIVE STATUS =================
-  static final Uuid chargingStatusUuid =
-  Uuid.parse("12345678-1234-5678-1234-56789abcdef7");
+  /// ================= CONFIGURATION =================
+  /// Charger Type (Read / Write)
+  static final Uuid chargerTypeUuid =
+  Uuid.parse("12345678-1234-5678-1234-56789abcde22");
 
-  // ================= CONNECTOR / CHARGER =================
+  /// Connector Count (Read / Write)
   static final Uuid connectorCountUuid =
   Uuid.parse("12345678-1234-5678-1234-56789abcde21");
 
-  // 🔒 IMPORTANT: Charger Type (MATCHES ESP + EXCEL)
-  static final Uuid chargerTypeUuid =
-  Uuid.parse("12345678-1234-5678-1234-56789abcde22");
+  /// ================= LIVE STATUS =================
+  /// Charging Status (Notify / Read)
+  static final Uuid chargingStatusUuid =
+  Uuid.parse("12345678-1234-5678-1234-56789abcdef7");
 }
 
+/// =====================================================
+/// GLOBAL FLAGS
+/// =====================================================
+
+/// Simulator is permanently disabled.
+/// Real ESP firmware is the only source of truth.
 const bool BLE_SIMULATOR_MODE = false;
+

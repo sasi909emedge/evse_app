@@ -60,9 +60,7 @@ class _BleScanScreenState extends State<BleScanScreen> {
     _scanSub = BleService.instance.scanDevices().listen((device) {
       final exists = _devices.any((d) => d.id == device.id);
       if (!exists) {
-        setState(() {
-          _devices.add(device);
-        });
+        setState(() => _devices.add(device));
       }
     });
 
@@ -91,10 +89,15 @@ class _BleScanScreenState extends State<BleScanScreen> {
       BleService.instance.connectToDevice(deviceId);
 
       await connectionStream.firstWhere(
-            (state) =>
-        state.connectionState ==
-            DeviceConnectionState.connected,
+            (state) => state.connectionState == DeviceConnectionState.connected,
       );
+
+// ✅ IMPORTANT: allow Android BLE stack to settle
+      await Future.delayed(const Duration(milliseconds: 500));
+
+// now verify EVSE safely
+      ///await BleService.instance.verifyEvse(deviceId);
+
 
       if (!mounted) return;
       Navigator.pop(context);
@@ -105,18 +108,20 @@ class _BleScanScreenState extends State<BleScanScreen> {
           builder: (_) => EvseDetailsScreen(deviceId: deviceId),
         ),
       );
-    } catch (_) {
+    } catch (e) {
+      debugPrint('BLE connect error: $e');
+
       if (mounted) {
         Navigator.pop(context);
+
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: Text('Selected device is not a compatible EVSE'),
+            content: Text('Failed to connect. Please try again.'),
           ),
         );
       }
     }
   }
-
   // ================= DEVICE TILE =================
   Widget _deviceTile(DiscoveredDevice d) {
     final selected = _selectedDevice?.id == d.id;
@@ -135,13 +140,11 @@ class _BleScanScreenState extends State<BleScanScreen> {
           color: selected ? AppColors.primary : Colors.blue,
         ),
         title: Text(
-          d.name.isEmpty ? 'Unnamed Device' : d.name,
+          d.name.isEmpty ? 'EVSE Device' : d.name,
           style: const TextStyle(fontWeight: FontWeight.bold),
         ),
         subtitle: Text(d.id),
-        onTap: () {
-          setState(() => _selectedDevice = d);
-        },
+        onTap: () => setState(() => _selectedDevice = d),
       ),
     );
   }
@@ -184,7 +187,7 @@ class _BleScanScreenState extends State<BleScanScreen> {
             child: _devices.isEmpty
                 ? const Center(
               child: Text(
-                'No BLE devices found',
+                'No EVSE devices found',
                 style: TextStyle(color: Colors.grey),
               ),
             )
