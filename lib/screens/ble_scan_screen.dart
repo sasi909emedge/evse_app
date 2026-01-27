@@ -41,15 +41,9 @@ class _BleScanScreenState extends State<BleScanScreen> {
   // ================= BLE SCAN =================
   Future<void> _startScan() async {
     final granted = await _ensureBlePermissions();
-    if (!granted) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Bluetooth permissions not granted')),
-      );
-      return;
-    }
+    if (!granted) return;
 
-    _scanSub?.cancel();
+    await _scanSub?.cancel();
 
     setState(() {
       _devices.clear();
@@ -59,20 +53,13 @@ class _BleScanScreenState extends State<BleScanScreen> {
 
     _scanSub = BleService.instance.scanDevices().listen((device) {
       final exists = _devices.any((d) => d.id == device.id);
-      if (!exists) {
+      if (!exists && mounted) {
         setState(() => _devices.add(device));
       }
     });
-
-    await Future.delayed(const Duration(seconds: 6));
-    await _scanSub?.cancel();
-
-    if (mounted) {
-      setState(() => _isScanning = false);
-    }
   }
 
-  // ================= BLE CONNECT =================
+  // ================= BLE CONNECT (FINAL FIX) =================
   Future<void> _connectSelectedDevice() async {
     if (_selectedDevice == null) return;
 
@@ -88,16 +75,11 @@ class _BleScanScreenState extends State<BleScanScreen> {
       final connectionStream =
       BleService.instance.connectToDevice(deviceId);
 
+      // 🔑 WAIT FOR REAL CONNECTION
       await connectionStream.firstWhere(
-            (state) => state.connectionState == DeviceConnectionState.connected,
+            (update) =>
+        update.connectionState == DeviceConnectionState.connected,
       );
-
-// ✅ IMPORTANT: allow Android BLE stack to settle
-      await Future.delayed(const Duration(milliseconds: 500));
-
-// now verify EVSE safely
-      ///await BleService.instance.verifyEvse(deviceId);
-
 
       if (!mounted) return;
       Navigator.pop(context);
@@ -108,20 +90,16 @@ class _BleScanScreenState extends State<BleScanScreen> {
           builder: (_) => EvseDetailsScreen(deviceId: deviceId),
         ),
       );
-    } catch (e) {
-      debugPrint('BLE connect error: $e');
+    } catch (_) {
+      if (!mounted) return;
+      Navigator.pop(context);
 
-      if (mounted) {
-        Navigator.pop(context);
-
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Failed to connect. Please try again.'),
-          ),
-        );
-      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Failed to connect')),
+      );
     }
   }
+
   // ================= DEVICE TILE =================
   Widget _deviceTile(DiscoveredDevice d) {
     final selected = _selectedDevice?.id == d.id;
@@ -164,51 +142,26 @@ class _BleScanScreenState extends State<BleScanScreen> {
       body: Column(
         children: [
           const SizedBox(height: 16),
-
           ElevatedButton.icon(
             icon: const Icon(Icons.search),
             label: Text(_isScanning ? 'Scanning…' : 'Scan BLE Devices'),
             onPressed: _isScanning ? null : _startScan,
-            style: ElevatedButton.styleFrom(
-              backgroundColor: AppColors.primary.withOpacity(0.15),
-              foregroundColor: AppColors.primary,
-              padding:
-              const EdgeInsets.symmetric(horizontal: 24, vertical: 14),
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(30),
-              ),
-            ),
           ),
-
-          const SizedBox(height: 12),
           const Divider(),
-
           Expanded(
             child: _devices.isEmpty
-                ? const Center(
-              child: Text(
-                'No EVSE devices found',
-                style: TextStyle(color: Colors.grey),
-              ),
-            )
+                ? const Center(child: Text('No EVSE devices found'))
                 : ListView.builder(
               itemCount: _devices.length,
               itemBuilder: (_, i) => _deviceTile(_devices[i]),
             ),
           ),
-
           Padding(
             padding: const EdgeInsets.all(16),
-            child: SizedBox(
-              width: double.infinity,
-              child: ElevatedButton(
-                onPressed:
-                _selectedDevice == null ? null : _connectSelectedDevice,
-                child: const Text(
-                  'Connect to Selected Device',
-                  style: TextStyle(fontSize: 16),
-                ),
-              ),
+            child: ElevatedButton(
+              onPressed:
+              _selectedDevice == null ? null : _connectSelectedDevice,
+              child: const Text('Connect to Selected Device'),
             ),
           ),
         ],

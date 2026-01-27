@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -20,22 +19,17 @@ class _EvseDetailsScreenState extends State<EvseDetailsScreen>
     with SingleTickerProviderStateMixin {
   bool editMode = false;
 
-  // ---------------- IDENTIFICATION ----------------
   final serialCtrl = TextEditingController();
-
-  // ---------------- CONFIG (INPUT) ----------------
   final chargerTypeCtrl = TextEditingController();
   final connectorCountCtrl = TextEditingController(text: '1');
 
-  // ---------------- DISPLAY / DERIVED ----------------
   final powerCtrl = TextEditingController();
   final phaseCtrl = TextEditingController();
   final voltageCtrl = TextEditingController();
   final currentCtrl = TextEditingController();
 
-  // ---------------- STATUS ----------------
-  String chargingStatus = 'Unknown';
-  StreamSubscription<List<int>>? _statusSub;
+  String chargingStatus = 'Idle';
+  StreamSubscription<int>? _statusSub;
   late AnimationController _blinkCtrl;
 
   @override
@@ -58,87 +52,36 @@ class _EvseDetailsScreenState extends State<EvseDetailsScreen>
     super.dispose();
   }
 
-  // ================= STATUS SUBSCRIBE =================
+  // ================= STATUS =================
   void _subscribeStatus() {
     _statusSub = BleService.instance
         .subscribeStatus(widget.deviceId)
-        .listen((bytes) {
-      final decoded = BleProtocol.decodeStatusPacket(bytes);
-      if (decoded.isEmpty) return;
-
+        .listen((status) {
       setState(() {
-        chargingStatus = decoded['statusText'] as String;
+        chargingStatus = BleProtocol.statusToText(status);
       });
     });
   }
 
-  // ================= AUTO-MAPPING =================
+  // ================= AUTO MAP =================
   void _applyChargerProfile(String type) {
-    final pwm = BleProtocol.pwmCapabilities[type] ?? [false, false, false];
+    final power = BleProtocol.maxPowerKw[type] ?? 0;
+    final phase = BleProtocol.phaseSupport[type] ?? 'Single';
 
-    // Derived display (UI-only)
-    if (type.contains('22')) {
-      powerCtrl.text = '22 kW';
-      phaseCtrl.text = 'Three';
-      voltageCtrl.text = '415V';
-      currentCtrl.text = '32A';
-    } else if (type.contains('14')) {
-      powerCtrl.text = '14 kW';
-      phaseCtrl.text = 'Three';
-      voltageCtrl.text = '415V';
-      currentCtrl.text = '20A';
-    } else {
-      powerCtrl.text = '7–11 kW';
-      phaseCtrl.text = 'Single';
-      voltageCtrl.text = '230V';
-      currentCtrl.text = '16A';
-    }
-
-    // PWM shown implicitly by charger type (no direct editing)
-    debugPrint('PWM capability: $pwm');
-  }
-
-  // ================= VALIDATION =================
-  bool _validateAll() {
-    if (chargerTypeCtrl.text.isEmpty) {
-      _err('Charger Type is required');
-      return false;
-    }
-    if (connectorCountCtrl.text.isEmpty) {
-      _err('Connector Count is required');
-      return false;
-    }
-    return true;
-  }
-
-  void _err(String m) {
-    showDialog(
-      context: context,
-      builder: (_) => AlertDialog(
-        title: const Text('Invalid Configuration'),
-        content: Text(m),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('OK'),
-          )
-        ],
-      ),
-    );
+    powerCtrl.text = '$power kW';
+    phaseCtrl.text = phase;
+    voltageCtrl.text = phase == 'Three' ? '415V' : '230V';
+    currentCtrl.text = phase == 'Three' ? '32A' : '16A';
   }
 
   // ================= SAVE =================
   Future<void> _save() async {
-    if (!_validateAll()) return;
-
-    // Identification (string write)
     await BleService.instance.writeStringCharacteristic(
       widget.deviceId,
       EVSEConfig.serialUuid,
       serialCtrl.text,
     );
 
-    // CONFIG (single binary packet)
     final packet = BleProtocol.buildConfigPacket(
       chargerType: chargerTypeCtrl.text,
       connectorCount: int.parse(connectorCountCtrl.text),
@@ -155,11 +98,9 @@ class _EvseDetailsScreenState extends State<EvseDetailsScreen>
   // ================= STORAGE =================
   Future<void> _loadLocal() async {
     final p = await SharedPreferences.getInstance();
-    setState(() {
-      serialCtrl.text = p.getString('serial') ?? '';
-      chargerTypeCtrl.text = p.getString('chargerType') ?? '';
-      connectorCountCtrl.text = p.getString('connectorCount') ?? '1';
-    });
+    serialCtrl.text = p.getString('serial') ?? '';
+    chargerTypeCtrl.text = p.getString('chargerType') ?? '';
+    connectorCountCtrl.text = p.getString('connectorCount') ?? '1';
 
     if (chargerTypeCtrl.text.isNotEmpty) {
       _applyChargerProfile(chargerTypeCtrl.text);
@@ -173,7 +114,7 @@ class _EvseDetailsScreenState extends State<EvseDetailsScreen>
     await p.setString('connectorCount', connectorCountCtrl.text);
   }
 
-  // ================= UI HELPERS =================
+  // ================= UI =================
   Color _statusColor() {
     switch (chargingStatus) {
       case 'Charging':
@@ -187,17 +128,6 @@ class _EvseDetailsScreenState extends State<EvseDetailsScreen>
     }
   }
 
-  Widget _statusWidget() => AnimatedBuilder(
-    animation: _blinkCtrl,
-    builder: (_, __) => Text(
-      chargingStatus,
-      style: TextStyle(
-        fontWeight: FontWeight.bold,
-        color: _statusColor().withOpacity(0.6 + 0.4 * _blinkCtrl.value),
-      ),
-    ),
-  );
-
   Widget _card(String title, Widget child) => Card(
     margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
     child: ListTile(title: Text(title), subtitle: child),
@@ -209,36 +139,26 @@ class _EvseDetailsScreenState extends State<EvseDetailsScreen>
   Widget _dropdown(
       String label,
       TextEditingController c,
-      List<String> options, {
-        void Function(String)? onChanged,
-      }) =>
+      List<String> options,
+      void Function(String)? onChanged,
+      ) =>
       _card(
         label,
         DropdownButtonFormField<String>(
           value: options.contains(c.text) ? c.text : null,
           items: options
-              .map((item) =>
-              DropdownMenuItem(value: item, child: Text(item)))
+              .map((e) => DropdownMenuItem(value: e, child: Text(e)))
               .toList(),
           onChanged: editMode
-              ? (value) {
-            if (value == null) return;
-            setState(() => c.text = value);
-            if (onChanged != null) onChanged(value);
+              ? (v) {
+            if (v == null) return;
+            setState(() => c.text = v);
+            onChanged?.call(v);
           }
               : null,
         ),
       );
 
-  Widget _section(String t) => Padding(
-    padding: const EdgeInsets.all(12),
-    child: Text(
-      t,
-      style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-    ),
-  );
-
-  // ================= BUILD =================
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -251,32 +171,34 @@ class _EvseDetailsScreenState extends State<EvseDetailsScreen>
             onPressed: () async {
               if (!editMode) {
                 setState(() => editMode = true);
-                return;
+              } else {
+                setState(() => editMode = false);
+                await _save();
               }
-              setState(() => editMode = false);
-              await _save();
             },
-          ),
+          )
         ],
       ),
       body: ListView(
         children: [
-          _section('Charging Status'),
-          _card('Status', _statusWidget()),
-
-          _section('Identification'),
+          _card(
+            'Status',
+            Text(
+              chargingStatus,
+              style: TextStyle(
+                fontWeight: FontWeight.bold,
+                color: _statusColor(),
+              ),
+            ),
+          ),
           _field('Serial', serialCtrl),
-
-          _section('Configuration'),
           _dropdown(
             'Charger Type',
             chargerTypeCtrl,
             BleProtocol.chargerTypeEnum.keys.toList(),
-            onChanged: _applyChargerProfile,
+            _applyChargerProfile,
           ),
-          _dropdown('Connector Count', connectorCountCtrl, ['1', '2']),
-
-          _section('Electrical (Derived)'),
+          _dropdown('Connector Count', connectorCountCtrl, ['1', '2'], null),
           _field('Power', powerCtrl),
           _field('Phase', phaseCtrl),
           _field('Voltage', voltageCtrl),

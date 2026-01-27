@@ -1,45 +1,18 @@
 import 'package:flutter_reactive_ble/flutter_reactive_ble.dart';
 
-/// =====================================================
-/// EVSE BLE UUID CONTRACT
-/// -----------------------------------------------------
-/// - MUST match ESP-IDF exactly
-/// - ONLY Excel-backed + ESP-implemented UUIDs live here
-/// - No simulator
-/// - No unused characteristics
-/// =====================================================
-
 class EVSEConfig {
-  /// ================= PRIMARY SERVICE =================
-  /// EVSE Primary Service UUID
+  // ================= SERVICE =================
   static final Uuid serviceUuid =
   Uuid.parse("12345678-1234-5678-1234-56789abcdef0");
 
-  /// ================= IDENTIFICATION =================
-  /// Serial Number (Read / Write)
+  // ================= CHARACTERISTICS =================
   static final Uuid serialUuid =
   Uuid.parse("12345678-1234-5678-1234-56789abcdef1");
 
-  /// ================= CONFIGURATION =================
-  /// Charger Type (Read / Write)
-  static final Uuid chargerTypeUuid =
-  Uuid.parse("12345678-1234-5678-1234-56789abcde22");
+  static final Uuid configUuid =
+  Uuid.parse("12345678-1234-5678-1234-56789abcde22"); // ✅ CONFIG (BINARY)
 
-  /// Connector Count (Read / Write)
-  static final Uuid connectorCountUuid =
-  Uuid.parse("12345678-1234-5678-1234-56789abcde21");
-
-  /// ================= LIVE STATUS =================
-  /// Charging Status (Notify / Read)
   static final Uuid chargingStatusUuid =
-  Uuid.parse("12345678-1234-5678-1234-56789abcdef7");
+  Uuid.parse("12345678-1234-5678-1234-56789abcde07");
 }
-
-/// =====================================================
-/// GLOBAL FLAGS
-/// =====================================================
-
-/// Simulator is permanently disabled.
-/// Real ESP firmware is the only source of truth.
-const bool BLE_SIMULATOR_MODE = false;
 
