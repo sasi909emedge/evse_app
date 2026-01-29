@@ -4,7 +4,7 @@ import 'package:flutter_reactive_ble/flutter_reactive_ble.dart';
 import 'package:permission_handler/permission_handler.dart';
 
 import '../ble/ble_service.dart';
-import '../screens/evse_details_screen.dart';
+import 'evse_details_screen.dart';
 import '../theme/app_colors.dart';
 
 class BleScanScreen extends StatefulWidget {
@@ -17,6 +17,7 @@ class BleScanScreen extends StatefulWidget {
 class _BleScanScreenState extends State<BleScanScreen> {
   final List<DiscoveredDevice> _devices = [];
   StreamSubscription<DiscoveredDevice>? _scanSub;
+  StreamSubscription<ConnectionStateUpdate>? _connSub;
 
   bool _isScanning = false;
   DiscoveredDevice? _selectedDevice;
@@ -24,10 +25,10 @@ class _BleScanScreenState extends State<BleScanScreen> {
   @override
   void dispose() {
     _scanSub?.cancel();
+    _connSub?.cancel(); // ✅ add this
     super.dispose();
   }
 
-  // ================= PERMISSIONS =================
   Future<bool> _ensureBlePermissions() async {
     final statuses = await [
       Permission.bluetoothScan,
@@ -38,7 +39,6 @@ class _BleScanScreenState extends State<BleScanScreen> {
     return statuses.values.every((s) => s.isGranted);
   }
 
-  // ================= BLE SCAN =================
   Future<void> _startScan() async {
     final granted = await _ensureBlePermissions();
     if (!granted) return;
@@ -56,10 +56,15 @@ class _BleScanScreenState extends State<BleScanScreen> {
       if (!exists && mounted) {
         setState(() => _devices.add(device));
       }
+    }, onError: (_) {
+      if (mounted) {
+        setState(() => _isScanning = false);
+      }
+    }, onDone: () {
+      if (mounted) setState(() => _isScanning = false);
     });
   }
 
-  // ================= BLE CONNECT (FINAL FIX) =================
   Future<void> _connectSelectedDevice() async {
     if (_selectedDevice == null) return;
 
@@ -71,36 +76,58 @@ class _BleScanScreenState extends State<BleScanScreen> {
       builder: (_) => const Center(child: CircularProgressIndicator()),
     );
 
-    try {
-      final connectionStream =
-      BleService.instance.connectToDevice(deviceId);
+    _connSub?.cancel(); // cancel any previous connection
+    _connSub = BleService.instance.connectToDevice(deviceId).listen((update) async {
+      debugPrint('Connection state: ${update.connectionState}');
+      if (update.connectionState == DeviceConnectionState.connected) {
+        try {
+          final mtu = await BleService.instance.requestMtu(deviceId, 247);
+          debugPrint('Negotiated MTU: $mtu');
+          if (mtu - 3 < 32) {
+            if (!mounted) return;
+            Navigator.pop(context);
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('MTU too small for config packet')),
+            );
+            return;
+          }
 
-      // 🔑 WAIT FOR REAL CONNECTION
-      await connectionStream.firstWhere(
-            (update) =>
-        update.connectionState == DeviceConnectionState.connected,
-      );
+          // 🔑 DISCOVER SERVICES FIRST
+          await BleService.instance.discoverServices(deviceId);
 
+          BleService.instance.subscribeStatus(deviceId).listen((code) {
+            debugPrint('Status notify: 0x${code.toRadixString(16)}');
+          });
+
+          if (!mounted) return;
+          Navigator.pop(context);
+          _connSub?.cancel();
+
+          Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (_) => EvseDetailsScreen(deviceId: deviceId),
+            ),
+          );
+
+        } catch (e) {
+          debugPrint('MTU negotiation failed: $e');
+          if (!mounted) return;
+          Navigator.pop(context);
+        }
+      } else if (update.connectionState == DeviceConnectionState.disconnected) {
+        debugPrint('Disconnected from $deviceId');
+      }
+    }, onError: (err) {
+      debugPrint('Connect error: $err');
       if (!mounted) return;
       Navigator.pop(context);
-
-      Navigator.push(
-        context,
-        MaterialPageRoute(
-          builder: (_) => EvseDetailsScreen(deviceId: deviceId),
-        ),
-      );
-    } catch (_) {
-      if (!mounted) return;
-      Navigator.pop(context);
-
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Failed to connect')),
       );
-    }
+    });
   }
 
-  // ================= DEVICE TILE =================
   Widget _deviceTile(DiscoveredDevice d) {
     final selected = _selectedDevice?.id == d.id;
 
@@ -127,7 +154,6 @@ class _BleScanScreenState extends State<BleScanScreen> {
     );
   }
 
-  // ================= UI =================
   @override
   Widget build(BuildContext context) {
     return Scaffold(

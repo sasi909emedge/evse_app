@@ -12,7 +12,7 @@ class EVSEApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
-      title: 'EMEDGE MICROCONTROLLER',
+      title: 'EMC (EMEDGE MASTERCONTROLLER)',
       theme: ThemeData(useMaterial3: true),
       home: const BleScanScreen(),
     );
