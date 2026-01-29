@@ -1,14 +1,13 @@
 import 'dart:async';
-import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+
 import '../theme/app_colors.dart';
 import '../ble/ble_protocol.dart';
 import '../ble/ble_service.dart';
 import '../config/evse_config.dart';
-
-/// ================== SIMULATOR SWITCH ==================
-const bool useSimulator = false;
+import '../widgets/connector_settings.dart';
+import '../widgets/connectivity_settings.dart';
 
 class EvseDetailsScreen extends StatefulWidget {
   final String deviceId;
@@ -22,274 +21,288 @@ class _EvseDetailsScreenState extends State<EvseDetailsScreen>
     with SingleTickerProviderStateMixin {
   bool editMode = false;
 
-  // 🔒 protects serial after Save
-  String? _pendingSerialSave;
-
-  // ---------------- OPTION A – IDENTIFICATION ----------------
+  // Basic fields
   final serialCtrl = TextEditingController();
-  final vendorCtrl = TextEditingController();
-  final nameCtrl = TextEditingController();
-  final modelCtrl = TextEditingController();
-  final commissionedByCtrl = TextEditingController();
-  final commissionedDateCtrl = TextEditingController();
-  final locationCtrl = TextEditingController();
-
-  // ---------------- OPTION 1 – CHARGER TYPE ----------------
+  final chargerNameCtrl = TextEditingController();
   final chargerTypeCtrl = TextEditingController();
-  final chargerModeCtrl = TextEditingController(text: 'AC');
   final connectorCountCtrl = TextEditingController(text: '1');
 
-  // ---------------- OPTION B – ELECTRICAL ----------------
-  final voltageCtrl = TextEditingController();
-  final currentCtrl = TextEditingController();
+  // Derived display fields
   final powerCtrl = TextEditingController();
   final phaseCtrl = TextEditingController();
-  final supplyCtrl = TextEditingController(text: 'AC');
-  final freqCtrl = TextEditingController(text: '50');
+  final voltageCtrl = TextEditingController();
+  final currentCtrl = TextEditingController();
 
-  // ---------------- OPTION C – CONNECTOR ----------------
-  final connectorTypeCtrl = TextEditingController();
-  final maxPowerCtrl = TextEditingController();
-  final maxCurrentCtrl = TextEditingController();
+  // Numeric fields for packet
+  int overVoltage = 260;
+  int underVoltage = 200;
+  int overTemperature = 65;
+  bool restoreSession = true;
+  int restoreTimeout = 60;
+  bool gfci = true;
+  double ocC1 = 12.3;
+  double ocC2 = 13.2;
+  double ocC3 = 15.9;
+  int lowCurrentTime = 20;
+  double minLowCurrent = 0.25;
+  int suspendedBehaviour = 0; // 0=StopCharging
+  int suspendedTime = 100;
+  bool phaseMgmt = false;
+  bool loadMgmt = false;
 
-  // ---------------- PWM ----------------
-  final pwm1Ctrl = TextEditingController(text: 'Enable');
-  final pwm2Ctrl = TextEditingController(text: 'Disable');
-  final pwm3Ctrl = TextEditingController(text: 'Disable');
+  // Connectivity
+  bool wifiEnable = false;
+  bool gsmEnable = false;
+  bool ethEnable = false;
+  int wifiPriority = 1;
+  int gsmPriority = 2;
+  int ethPriority = 3;
 
-  // ---------------- STATUS / RX ----------------
   String chargingStatus = 'Idle';
-  late AnimationController _blinkCtrl;
-  Timer? _simTimer;
+  StreamSubscription<int>? _statusSub;
+  bool _saving = false;
 
   @override
   void initState() {
     super.initState();
-
-    _blinkCtrl = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 700),
-    )..repeat(reverse: true);
-
-    // ================= STEP 4.5 =================
-    // BLE IS SOURCE OF TRUTH — SUBSCRIBE FIRST
-
-    // ---------- STATUS NOTIFY ----------
-    BleService.instance
-        .subscribeRawCharacteristic(
-      widget.deviceId,
-      EVSEConfig.chargingStatusUuid,
-    )
-        .listen((bytes) {
-      if (editMode) return;
-      setState(() {
-        chargingStatus = BleProtocol.statusToText(bytes as int);
-      });
-    });
-
-    // ---------- SERIAL NOTIFY (SAFE) ----------
-    BleService.instance
-        .subscribeRawCharacteristic(
-      widget.deviceId,
-      EVSEConfig.serialUuid,
-    )
-        .listen((bytes) {
-      if (editMode) return;
-
-      final value = utf8.decode(bytes);
-
-      // 🔒 prevent overwrite right after Save
-      if (_pendingSerialSave != null && value != _pendingSerialSave) {
-        return;
-      }
-
-      setState(() {
-        serialCtrl.text = value;
-        _pendingSerialSave = null;
-      });
-    });
-
-    // ---------- LOAD LOCAL ONLY AS FALLBACK ----------
     _loadLocal();
-
-    if (useSimulator) _startSimulator();
+    _subscribeStatus();
   }
 
   @override
   void dispose() {
-    _blinkCtrl.dispose();
-    _simTimer?.cancel();
+    _statusSub?.cancel();
     super.dispose();
   }
 
-  // ================= SIMULATOR RX =================
-  void _startSimulator() {
-    const states = ['Idle', 'Charging', 'Fault', 'Finished'];
-    int idx = 0;
-    _simTimer = Timer.periodic(const Duration(seconds: 3), (_) {
-      if (editMode) return;
+  void _subscribeStatus() {
+    _statusSub = BleService.instance
+        .subscribeStatus(widget.deviceId)
+        .listen((status) {
       setState(() {
-        chargingStatus = states[idx % states.length];
-        idx++;
+        chargingStatus = BleProtocol.statusToText(status);
       });
     });
   }
 
-  // ================= AUTO-MAPPING LOGIC =================
   void _applyChargerProfile(String type) {
     final power = BleProtocol.maxPowerKw[type] ?? 0;
     final phase = BleProtocol.phaseSupport[type] ?? 'Single';
 
-    chargerTypeCtrl.text = type;
     powerCtrl.text = '$power kW';
-    maxPowerCtrl.text = '$power kW';
     phaseCtrl.text = phase;
-
     voltageCtrl.text = phase == 'Three' ? '415V' : '230V';
     currentCtrl.text = phase == 'Three' ? '32A' : '16A';
-
-    final pwm = BleProtocol.pwmCapabilities[type] ?? [false, false, false];
-    pwm1Ctrl.text = pwm[0] ? 'Enable' : 'Disable';
-    pwm2Ctrl.text = pwm[1] ? 'Enable' : 'Disable';
-    pwm3Ctrl.text = pwm[2] ? 'Enable' : 'Disable';
   }
 
-  // ================= VALIDATION =================
-  bool _validateAll() {
-    if (chargerTypeCtrl.text.isEmpty) return true;
+  Future<void> _save() async {
 
-    if (supplyCtrl.text == 'AC' &&
-        connectorTypeCtrl.text.isNotEmpty &&
-        connectorTypeCtrl.text != 'Type2') {
-      _err('AC chargers support only Type2');
-      return false;
+    if (!BleService.instance.isGattReady(widget.deviceId)) {
+      _showError('BLE not ready. Please reconnect to the charger.');
+      return;
     }
 
-    final pwm = BleProtocol.pwmCapabilities[chargerTypeCtrl.text] ?? [];
-    if (supplyCtrl.text != 'AC' && pwm.contains(true)) {
-      _err('PWM outputs allowed only for AC chargers');
-      return false;
+    final errors = _validateAll();
+    if (errors.isNotEmpty) {
+      _showError(errors.join('\n'));
+      return;
     }
 
-    return true;
+    setState(() => _saving = true);
+
+    try {
+      // Write serial and charger name as UTF-8 string (concatenate with separator)
+      final serialPayload = serialCtrl.text;
+      await BleService.instance.writeStringCharacteristic(
+        widget.deviceId,
+        EVSEConfig.serialUuid,
+        serialPayload,
+      );
+
+      // Build 32-byte packet
+      final packet = BleProtocol.buildConfigPacket(
+        chargerType: chargerTypeCtrl.text,
+        connectorCount: int.parse(connectorCountCtrl.text),
+        overVoltage: overVoltage,
+        underVoltage: underVoltage,
+        overTemperature: overTemperature,
+        restoreSession: restoreSession,
+        restoreTimeout: restoreTimeout,
+        gfci: gfci,
+        ocLimitC1: ocC1,
+        ocLimitC2: ocC2,
+        ocLimitC3: ocC3,
+        lowCurrentTime: lowCurrentTime,
+        minLowCurrent: minLowCurrent,
+        suspendedBehaviour: suspendedBehaviour,
+        suspendedTime: suspendedTime,
+        phaseMgmt: phaseMgmt,
+        loadMgmt: loadMgmt,
+        wifiEnable: wifiEnable,
+        gsmEnable: gsmEnable,
+        ethEnable: ethEnable,
+        wifiPriority: wifiPriority,
+        gsmPriority: gsmPriority,
+        ethPriority: ethPriority,
+      );
+
+      await BleService.instance.writeConfigPacket(widget.deviceId, packet);
+
+      // Persist locally
+      await _saveLocal();
+
+      _showMessage('Configuration saved successfully');
+    } catch (e) {
+      _showError('Failed to save configuration: $e');
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
   }
 
-  void _err(String m) {
-    showDialog(
-      context: context,
-      builder: (_) => AlertDialog(
-        title: const Text('Invalid Configuration'),
-        content: Text(m),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('OK'),
-          )
-        ],
-      ),
-    );
+  List<String> _validateAll() {
+    final List<String> errors = [];
+
+    if (serialCtrl.text.trim().isEmpty) {
+      errors.add('Serial is required.');
+    }
+
+    if (chargerTypeCtrl.text.isEmpty) {
+      errors.add('Charger Type is required.');
+    }
+
+    if (overVoltage < 170 || overVoltage > 275) {
+      errors.add('Over Voltage must be between 170 and 275 V.');
+    }
+    if (underVoltage < 170 || underVoltage > 275) {
+      errors.add('Under Voltage must be between 170 and 275 V.');
+    }
+    if (underVoltage >= overVoltage) {
+      errors.add('Under Voltage must be less than Over Voltage.');
+    }
+    if (overTemperature > 80) {
+      errors.add('Over Temperature must be ≤ 80 °C.');
+    }
+    if (ocC1 > 16.0 && _isSocketConnector(1)) {
+      errors.add('Connector 1 current cannot exceed 16.00 A for socket type.');
+    }
+    if (ocC2 > 16.0 && _isSocketConnector(2)) {
+      errors.add('Connector 2 current cannot exceed 16.00 A for socket type.');
+    }
+    if (ocC3 > 16.0 && _isSocketConnector(3)) {
+      errors.add('Connector 3 current cannot exceed 16.00 A for socket type.');
+    }
+    if (suspendedTime < 1 || suspendedTime > 1200) {
+      errors.add('Suspended Time must be between 1 and 1200 seconds.');
+    }
+    if (lowCurrentTime <= 0) {
+      errors.add('Low current time must be greater than 0.');
+    }
+    if (minLowCurrent <= 0) {
+      errors.add('Minimum low current must be greater than 0 A.');
+    }
+
+    return errors;
   }
 
-  // ================= CONFIG TX =================
-  void _sendConfig() {
-    final packet = BleProtocol.buildConfigPacket(
-      chargerType: chargerTypeCtrl.text,
-      connectorCount: int.parse(connectorCountCtrl.text),
-    );
-
-    debugPrint('CONFIG PACKET: $packet');
-    debugPrint(
-      packet.map((e) => e.toRadixString(16).padLeft(2, '0')).join(' '),
-    );
+  bool _isSocketConnector(int index) {
+    // Basic heuristic: if connector type is "16A/Domestic Socket" treat as socket
+    // For now we assume connector 1 is socket if connectorCount==1 and chargerType is AC-7S
+    if (index == 1 && chargerTypeCtrl.text == 'AC-7S') return true;
+    return false;
   }
 
-  // ================= STORAGE =================
   Future<void> _loadLocal() async {
     final p = await SharedPreferences.getInstance();
     serialCtrl.text = p.getString('serial') ?? '';
-    vendorCtrl.text = p.getString('vendor') ?? '';
-    nameCtrl.text = p.getString('name') ?? '';
-    modelCtrl.text = p.getString('model') ?? '';
-    commissionedByCtrl.text = p.getString('cby') ?? '';
-    commissionedDateCtrl.text = p.getString('cdate') ?? '';
-    locationCtrl.text = p.getString('location') ?? '';
+    chargerNameCtrl.text = p.getString('chargerName') ?? '';
+    chargerTypeCtrl.text = p.getString('chargerType') ?? '';
+    connectorCountCtrl.text = p.getString('connectorCount') ?? '1';
+
+    // Load numeric fields if present
+    overVoltage = p.getInt('overVoltage') ?? overVoltage;
+    underVoltage = p.getInt('underVoltage') ?? underVoltage;
+    overTemperature = p.getInt('overTemperature') ?? overTemperature;
+    restoreSession = p.getBool('restoreSession') ?? restoreSession;
+    restoreTimeout = p.getInt('restoreTimeout') ?? restoreTimeout;
+    gfci = p.getBool('gfci') ?? gfci;
+    ocC1 = p.getDouble('ocC1') ?? ocC1;
+    ocC2 = p.getDouble('ocC2') ?? ocC2;
+    ocC3 = p.getDouble('ocC3') ?? ocC3;
+    lowCurrentTime = p.getInt('lowCurrentTime') ?? lowCurrentTime;
+    minLowCurrent = p.getDouble('minLowCurrent') ?? minLowCurrent;
+    suspendedBehaviour = p.getInt('suspendedBehaviour') ?? suspendedBehaviour;
+    suspendedTime = p.getInt('suspendedTime') ?? suspendedTime;
+    phaseMgmt = p.getBool('phaseMgmt') ?? phaseMgmt;
+    loadMgmt = p.getBool('loadMgmt') ?? loadMgmt;
+
+    wifiEnable = p.getBool('wifiEnable') ?? wifiEnable;
+    gsmEnable = p.getBool('gsmEnable') ?? gsmEnable;
+    ethEnable = p.getBool('ethEnable') ?? ethEnable;
+    wifiPriority = p.getInt('wifiPriority') ?? wifiPriority;
+    gsmPriority = p.getInt('gsmPriority') ?? gsmPriority;
+    ethPriority = p.getInt('ethPriority') ?? ethPriority;
+
+    if (chargerTypeCtrl.text.isNotEmpty) {
+      _applyChargerProfile(chargerTypeCtrl.text);
+    }
+    setState(() {});
   }
 
   Future<void> _saveLocal() async {
     final p = await SharedPreferences.getInstance();
     await p.setString('serial', serialCtrl.text);
-    await p.setString('vendor', vendorCtrl.text);
-    await p.setString('name', nameCtrl.text);
-    await p.setString('model', modelCtrl.text);
-    await p.setString('cby', commissionedByCtrl.text);
-    await p.setString('cdate', commissionedDateCtrl.text);
-    await p.setString('location', locationCtrl.text);
+    await p.setString('chargerName', chargerNameCtrl.text);
+    await p.setString('chargerType', chargerTypeCtrl.text);
+    await p.setString('connectorCount', connectorCountCtrl.text);
+
+    await p.setInt('overVoltage', overVoltage);
+    await p.setInt('underVoltage', underVoltage);
+    await p.setInt('overTemperature', overTemperature);
+    await p.setBool('restoreSession', restoreSession);
+    await p.setInt('restoreTimeout', restoreTimeout);
+    await p.setBool('gfci', gfci);
+    await p.setDouble('ocC1', ocC1);
+    await p.setDouble('ocC2', ocC2);
+    await p.setDouble('ocC3', ocC3);
+    await p.setInt('lowCurrentTime', lowCurrentTime);
+    await p.setDouble('minLowCurrent', minLowCurrent);
+    await p.setInt('suspendedBehaviour', suspendedBehaviour);
+    await p.setInt('suspendedTime', suspendedTime);
+    await p.setBool('phaseMgmt', phaseMgmt);
+    await p.setBool('loadMgmt', loadMgmt);
+
+    await p.setBool('wifiEnable', wifiEnable);
+    await p.setBool('gsmEnable', gsmEnable);
+    await p.setBool('ethEnable', ethEnable);
+    await p.setInt('wifiPriority', wifiPriority);
+    await p.setInt('gsmPriority', gsmPriority);
+    await p.setInt('ethPriority', ethPriority);
   }
 
-  // ================= UI HELPERS =================
-  Color _statusColor() {
-    switch (chargingStatus) {
-      case 'Charging':
-        return Colors.green;
-      case 'Idle':
-        return Colors.orange;
-      case 'Fault':
-        return Colors.red;
-      default:
-        return Colors.grey;
-    }
+  void _showMessage(String msg) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
   }
 
-  Widget _statusWidget() => AnimatedBuilder(
-    animation: _blinkCtrl,
-    builder: (_, __) => Text(
-      chargingStatus,
-      style: TextStyle(
-        fontWeight: FontWeight.bold,
-        color: _statusColor().withOpacity(0.6 + 0.4 * _blinkCtrl.value),
+  void _showError(String msg) {
+    if (!mounted) return;
+    showDialog(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Validation Error'),
+        content: Text(msg),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text('OK'))
+        ],
       ),
-    ),
-  );
+    );
+  }
 
-  Widget _card(String title, Widget child) => Card(
+  Widget _field(String label, Widget child) => Card(
     margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-    child: ListTile(title: Text(title), subtitle: child),
+    child: ListTile(title: Text(label), subtitle: child),
   );
 
-  Widget _field(String label, TextEditingController c) =>
-      _card(label, editMode ? TextField(controller: c) : Text(c.text));
-
-  Widget _dropdown(
-      String label,
-      TextEditingController c,
-      List<String> options, {
-        void Function(String)? onChanged,
-      }) =>
-      _card(
-        label,
-        DropdownButtonFormField<String>(
-          value: options.contains(c.text) ? c.text : null,
-          items: options
-              .map((item) =>
-              DropdownMenuItem(value: item, child: Text(item)))
-              .toList(),
-          onChanged: (value) {
-            if (value == null) return;
-            setState(() => c.text = value);
-            if (onChanged != null) onChanged(value);
-          },
-        ),
-      );
-
-  Widget _section(String t) => Padding(
-    padding: const EdgeInsets.all(12),
-    child: Text(
-      t,
-      style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-    ),
-  );
-
-  // ================= BUILD =================
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -302,80 +315,228 @@ class _EvseDetailsScreenState extends State<EvseDetailsScreen>
             onPressed: () async {
               if (!editMode) {
                 setState(() => editMode = true);
-                return;
-              }
-
-              if (!_validateAll()) return;
-
-              _pendingSerialSave = serialCtrl.text;
-              setState(() => editMode = false);
-
-              await BleService.instance.writeStringCharacteristic(
-                widget.deviceId,
-                EVSEConfig.serialUuid,
-                serialCtrl.text,
-              );
-
-              if (chargerTypeCtrl.text.isNotEmpty) {
-                await BleService.instance.writeStringCharacteristic(
-                  widget.deviceId,
-                  EVSEConfig.chargerTypeUuid,
-                  chargerTypeCtrl.text,
-                );
-              }
-
-              if (connectorCountCtrl.text.isNotEmpty) {
-                await BleService.instance.writeStringCharacteristic(
-                  widget.deviceId,
-                  EVSEConfig.connectorCountUuid,
-                  connectorCountCtrl.text,
-                );
-              }
-
-              await _saveLocal();
-
-              if (chargerTypeCtrl.text.isNotEmpty) {
-                _sendConfig();
+              } else {
+                setState(() => editMode = false);
+                await _save();
               }
             },
-          ),
+          )
         ],
       ),
-      body: ListView(
+      body: Stack(
         children: [
-          _section('Charging Status'),
-          _card('Status', _statusWidget()),
-          _section('Option A – Identification'),
-          _field('Serial', serialCtrl),
-          _field('Vendor', vendorCtrl),
-          _field('Name', nameCtrl),
-          _field('Model', modelCtrl),
-          _field('Commissioned By', commissionedByCtrl),
-          _field('Commissioned Date', commissionedDateCtrl),
-          _field('Location', locationCtrl),
-          _section('Option 1 – Charger Type'),
-          _dropdown(
-            'Charger Type',
-            chargerTypeCtrl,
-            BleProtocol.chargerTypeEnum.keys.toList(),
-            onChanged: _applyChargerProfile,
+          ListView(
+            children: [
+              _field(
+                'Status',
+                Text(
+                  chargingStatus,
+                  style: TextStyle(
+                    fontWeight: FontWeight.bold,
+                    color: chargingStatus == 'Charging'
+                        ? Colors.green
+                        : chargingStatus == 'Fault'
+                        ? Colors.red
+                        : Colors.orange,
+                  ),
+                ),
+              ),
+              _field(
+                'Serial',
+                editMode
+                    ? TextField(controller: serialCtrl)
+                    : Text(serialCtrl.text.isEmpty ? '-' : serialCtrl.text),
+              ),
+              _field(
+                'Charger Name',
+                editMode
+                    ? TextField(controller: chargerNameCtrl)
+                    : Text(chargerNameCtrl.text.isEmpty ? '-' : chargerNameCtrl.text),
+              ),
+              _field(
+                'Charger Type',
+                editMode
+                    ? DropdownButtonFormField<String>(
+                  value: BleProtocol.chargerTypeEnum.keys.contains(chargerTypeCtrl.text)
+                      ? chargerTypeCtrl.text
+                      : null,
+                  items: BleProtocol.chargerTypeEnum.keys
+                      .map((e) => DropdownMenuItem(value: e, child: Text(e)))
+                      .toList(),
+                  onChanged: (v) {
+                    if (v == null) return;
+                    setState(() {
+                      chargerTypeCtrl.text = v;
+                      _applyChargerProfile(v);
+                    });
+                  },
+                )
+                    : Text(chargerTypeCtrl.text.isEmpty ? '-' : chargerTypeCtrl.text),
+              ),
+              _field(
+                'Connector Count',
+                editMode
+                    ? DropdownButtonFormField<String>(
+                  value: ['1', '2', '3'].contains(connectorCountCtrl.text)
+                      ? connectorCountCtrl.text
+                      : '1',
+                  items: ['1', '2', '3']
+                      .map((e) => DropdownMenuItem(value: e, child: Text(e)))
+                      .toList(),
+                  onChanged: (v) {
+                    if (v == null) return;
+                    setState(() => connectorCountCtrl.text = v);
+                  },
+                )
+                    : Text(connectorCountCtrl.text),
+              ),
+              // Derived fields
+              _field('Power', Text(powerCtrl.text.isEmpty ? '-' : powerCtrl.text)),
+              _field('Phase', Text(phaseCtrl.text.isEmpty ? '-' : phaseCtrl.text)),
+              _field('Voltage', Text(voltageCtrl.text.isEmpty ? '-' : voltageCtrl.text)),
+              _field('Current', Text(currentCtrl.text.isEmpty ? '-' : currentCtrl.text)),
+              // Connector settings widget (reusable)
+              ConnectorSettings(
+                editMode: editMode,
+                connectorCount: int.parse(connectorCountCtrl.text),
+                onValuesChanged: (c1, c2, c3) {
+                  setState(() {
+                    ocC1 = c1;
+                    ocC2 = c2;
+                    ocC3 = c3;
+                  });
+                },
+                initialC1: ocC1,
+                initialC2: ocC2,
+                initialC3: ocC3,
+              ),
+              // General thresholds
+              _field(
+                'Over Voltage Threshold (V)',
+                editMode
+                    ? TextFormField(
+                  initialValue: overVoltage.toString(),
+                  keyboardType: TextInputType.number,
+                  onChanged: (v) => overVoltage = int.tryParse(v) ?? overVoltage,
+                )
+                    : Text('$overVoltage V'),
+              ),
+              _field(
+                'Under Voltage Threshold (V)',
+                editMode
+                    ? TextFormField(
+                  initialValue: underVoltage.toString(),
+                  keyboardType: TextInputType.number,
+                  onChanged: (v) => underVoltage = int.tryParse(v) ?? underVoltage,
+                )
+                    : Text('$underVoltage V'),
+              ),
+              _field(
+                'Over Temperature Threshold (°C)',
+                editMode
+                    ? TextFormField(
+                  initialValue: overTemperature.toString(),
+                  keyboardType: TextInputType.number,
+                  onChanged: (v) => overTemperature = int.tryParse(v) ?? overTemperature,
+                )
+                    : Text('$overTemperature °C'),
+              ),
+              // Restore session
+              _field(
+                'Restore Session from Fault',
+                editMode
+                    ? Switch(
+                  value: restoreSession,
+                  onChanged: (v) => setState(() => restoreSession = v),
+                )
+                    : Text(restoreSession ? 'Enabled' : 'Disabled'),
+              ),
+              _field(
+                'Session Restore Timeout (s)',
+                editMode
+                    ? TextFormField(
+                  initialValue: restoreTimeout.toString(),
+                  keyboardType: TextInputType.number,
+                  onChanged: (v) => restoreTimeout = int.tryParse(v) ?? restoreTimeout,
+                )
+                    : Text('$restoreTimeout s'),
+              ),
+              _field(
+                'GFCI',
+                editMode
+                    ? Switch(value: gfci, onChanged: (v) => setState(() => gfci = v))
+                    : Text(gfci ? 'Enabled' : 'Disabled'),
+              ),
+              // Suspended behaviour/time
+              _field(
+                'Suspended State Behaviour',
+                editMode
+                    ? DropdownButtonFormField<int>(
+                  value: suspendedBehaviour,
+                  items: const [
+                    DropdownMenuItem(value: 0, child: Text('Stop Charging')),
+                    DropdownMenuItem(value: 1, child: Text('Pause')),
+                  ],
+                  onChanged: (v) {
+                    if (v == null) return;
+                    setState(() => suspendedBehaviour = v);
+                  },
+                )
+                    : Text(suspendedBehaviour == 0 ? 'Stop Charging' : 'Pause'),
+              ),
+              _field(
+                'Suspended Time Threshold (s)',
+                editMode
+                    ? TextFormField(
+                  initialValue: suspendedTime.toString(),
+                  keyboardType: TextInputType.number,
+                  onChanged: (v) => suspendedTime = int.tryParse(v) ?? suspendedTime,
+                )
+                    : Text('$suspendedTime s'),
+              ),
+              // Phase & Load management
+              _field(
+                'Phase Management Feature',
+                editMode
+                    ? Switch(value: phaseMgmt, onChanged: (v) => setState(() => phaseMgmt = v))
+                    : Text(phaseMgmt ? 'Enabled' : 'Disabled'),
+              ),
+              _field(
+                'Load Management Feature',
+                editMode
+                    ? Switch(value: loadMgmt, onChanged: (v) => setState(() => loadMgmt = v))
+                    : Text(loadMgmt ? 'Enabled' : 'Disabled'),
+              ),
+              // Connectivity settings widget
+              ConnectivitySettings(
+                editMode: editMode,
+                wifiEnable: wifiEnable,
+                gsmEnable: gsmEnable,
+                ethEnable: ethEnable,
+                wifiPriority: wifiPriority,
+                gsmPriority: gsmPriority,
+                ethPriority: ethPriority,
+                onChanged: (we, ge, ee, wp, gp, ep) {
+                  setState(() {
+                    wifiEnable = we;
+                    gsmEnable = ge;
+                    ethEnable = ee;
+                    wifiPriority = wp;
+                    gsmPriority = gp;
+                    ethPriority = ep;
+                  });
+                },
+              ),
+              const SizedBox(height: 80),
+            ],
           ),
-          _section('Option B – Electrical'),
-          _field('Voltage', voltageCtrl),
-          _field('Current', currentCtrl),
-          _field('Power', powerCtrl),
-          _dropdown('Phase', phaseCtrl, ['Single', 'Three']),
-          _dropdown('Supply', supplyCtrl, ['AC']),
-          _dropdown('Frequency', freqCtrl, ['50', '60']),
-          _section('Option C – Connector'),
-          _dropdown('Connector Type', connectorTypeCtrl, ['Type2']),
-          _dropdown('Connector Count', connectorCountCtrl, ['1', '2']),
-          _field('Max Power', maxPowerCtrl),
-          _field('Max Current', maxCurrentCtrl),
-          _section('PWM Outputs'),
-          _dropdown('PWM-1', pwm1Ctrl, ['Enable', 'Disable']),
-          _dropdown('PWM-2', pwm2Ctrl, ['Enable', 'Disable']),
-          _dropdown('PWM-3', pwm3Ctrl, ['Enable', 'Disable']),
+          if (_saving)
+            const Positioned.fill(
+              child: ColoredBox(
+                color: Color.fromARGB(120, 0, 0, 0),
+                child: Center(child: CircularProgressIndicator()),
+              ),
+            ),
         ],
       ),
     );

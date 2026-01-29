@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_reactive_ble/flutter_reactive_ble.dart';
 import '../config/evse_config.dart';
 
@@ -8,92 +9,126 @@ class BleService {
   static final BleService instance = BleService._internal();
 
   final FlutterReactiveBle _ble = FlutterReactiveBle();
-
-  // 🔒 KEEP CONNECTION ALIVE (CRITICAL FIX)
   StreamSubscription<ConnectionStateUpdate>? _connectionSub;
+
+  // Keep last MTU value per device
+  final Map<String, int> _deviceMtu = {};
+  final Map<String, bool> _gattReady = {};
 
   // ================= SCAN =================
   Stream<DiscoveredDevice> scanDevices() {
+    // No service filter: show all nearby BLE devices for debugging
     return _ble.scanForDevices(
-      withServices: const [],
+      withServices: const [],            // required; empty = no filter
       scanMode: ScanMode.lowLatency,
     );
   }
 
-  // ================= CONNECT (FIXED) =================
+  // ================= CONNECT =================
   Stream<ConnectionStateUpdate> connectToDevice(String deviceId) {
-    // cancel any previous connection
+    // Cancel any previous internal subscription we may have kept
     _connectionSub?.cancel();
+    _connectionSub = null;
 
+    // Return the raw connection stream to the caller.
+    // Do NOT call listen() here — let the caller subscribe once.
     final stream = _ble.connectToDevice(
       id: deviceId,
       connectionTimeout: const Duration(seconds: 10),
     );
 
-    // 🔑 KEEP LISTENING — DO NOT REMOVE
-    _connectionSub = stream.listen((update) {
-      // you can log if needed
-      // print('[BLE] ${update.connectionState}');
-    });
-
     return stream;
   }
 
-  // ================= WRITE STRING =================
+  Future<int> requestMtu(String deviceId, int mtu) async {
+    try {
+      final negotiated = await _ble.requestMtu(deviceId: deviceId, mtu: mtu);
+      _deviceMtu[deviceId] = negotiated;
+      return negotiated;
+    } catch (e) {
+      debugPrint('MTU request failed: $e');
+      rethrow;
+    }
+  }
+
+  // ================= DISCOVER SERVICES =================
+  Future<void> discoverServices(String deviceId) async {
+    await _ble.discoverAllServices(deviceId);
+
+    final services = await _ble.getDiscoveredServices(deviceId);
+    if (services.isEmpty) {
+      throw Exception('No GATT services discovered');
+    }
+
+    _gattReady[deviceId] = true;
+  }
+  bool isGattReady(String deviceId) {
+    return _gattReady[deviceId] == true;
+  }
+
+  // ================= WRITE STRING (UTF-8) =================
   Future<void> writeStringCharacteristic(
-      String deviceId,
-      Uuid characteristicUuid,
-      String value,
-      ) async {
+      String deviceId, Uuid characteristicUuid, String value) async {
+
+    if (!isGattReady(deviceId)) {
+      throw Exception('BLE GATT not ready');
+    }
     final characteristic = QualifiedCharacteristic(
       deviceId: deviceId,
       serviceId: EVSEConfig.serviceUuid,
       characteristicId: characteristicUuid,
     );
 
-    final data = utf8.encode(value);
+    final bytes = utf8.encode(value);
+    await _ble.writeCharacteristicWithResponse(
+      characteristic,
+      value: bytes,
+    );
+  }
 
-    // DEBUG (KEEP THIS)
-    print(
-      '[BLE WRITE] ${characteristicUuid.toString()} -> "$value" (${data.length} bytes)',
+  // ================= WRITE CONFIG (32 bytes) =================
+  Future<void> writeConfigPacket(String deviceId, List<int> packet) async {
+
+    if (!isGattReady(deviceId)) {
+      throw Exception('BLE GATT not ready');
+    }
+    final mtu = _deviceMtu[deviceId] ?? 23; // default ATT MTU 23
+    // ATT payload = MTU - 3; ensure payload >= 32
+    final payloadSize = mtu - 3;
+    if (payloadSize < EVSEConfig.configPacketLength) {
+      // If MTU too small, still attempt write but warn caller
+      // Caller (UI) should show an error; here we still attempt
+    }
+
+    final characteristic = QualifiedCharacteristic(
+      deviceId: deviceId,
+      serviceId: EVSEConfig.serviceUuid,
+      characteristicId: EVSEConfig.configUuid,
     );
 
     await _ble.writeCharacteristicWithResponse(
       characteristic,
-      value: data,
+      value: packet,
     );
-
-    print('[BLE WRITE OK]');
-  }
-
-  // ================= RAW SUBSCRIBE =================
-  Stream<List<int>> subscribeRawCharacteristic(
-      String deviceId,
-      Uuid characteristicUuid,
-      ) {
-    final characteristic = QualifiedCharacteristic(
-      deviceId: deviceId,
-      serviceId: EVSEConfig.serviceUuid,
-      characteristicId: characteristicUuid,
-    );
-
-    return _ble.subscribeToCharacteristic(characteristic);
   }
 
   // ================= STATUS SUBSCRIBE =================
-  Stream<int> subscribeStatus(
-      String deviceId,
-      Uuid characteristicUuid,
-      ) {
+  Stream<int> subscribeStatus(String deviceId) {
     final characteristic = QualifiedCharacteristic(
       deviceId: deviceId,
       serviceId: EVSEConfig.serviceUuid,
-      characteristicId: characteristicUuid,
+      characteristicId: EVSEConfig.chargingStatusUuid,
     );
 
     return _ble
         .subscribeToCharacteristic(characteristic)
         .where((data) => data.isNotEmpty)
         .map((data) => data.first);
+  }
+
+  // ================= DISCONNECT =================
+  void disconnect() {
+    _connectionSub?.cancel();
+    _connectionSub = null;
   }
 }
