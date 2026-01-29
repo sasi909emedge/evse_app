@@ -1,0 +1,30 @@
+# ===== Flutter =====
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+.pub-cache/
+build/
+
+# ===== Android =====
+.gradle/
+local.properties
+*.hprof
+**/GeneratedPluginRegistrant.*
+
+# ===== iOS / macOS =====
+ios/Pods/
+macos/Pods/
+
+# ===== Windows / Linux =====
+windows/flutter/generated*
+linux/flutter/generated*
+
+# ===== IDE =====
+.vscode/
+.idea/
+*.iml
+
+# ===== OS =====
+.DS_Store
+Thumbs.db
