@@ -25,7 +25,7 @@ class _BleScanScreenState extends State<BleScanScreen> {
   @override
   void dispose() {
     _scanSub?.cancel();
-    _connSub?.cancel(); // ✅ add this
+    _connSub?.cancel();
     super.dispose();
   }
 
@@ -57,9 +57,7 @@ class _BleScanScreenState extends State<BleScanScreen> {
         setState(() => _devices.add(device));
       }
     }, onError: (_) {
-      if (mounted) {
-        setState(() => _isScanning = false);
-      }
+      if (mounted) setState(() => _isScanning = false);
     }, onDone: () {
       if (mounted) setState(() => _isScanning = false);
     });
@@ -76,13 +74,17 @@ class _BleScanScreenState extends State<BleScanScreen> {
       builder: (_) => const Center(child: CircularProgressIndicator()),
     );
 
-    _connSub?.cancel(); // cancel any previous connection
-    _connSub = BleService.instance.connectToDevice(deviceId).listen((update) async {
+    _connSub?.cancel();
+    _connSub = BleService.instance
+        .connectToDevice(deviceId)
+        .listen((update) async {
       debugPrint('Connection state: ${update.connectionState}');
+
       if (update.connectionState == DeviceConnectionState.connected) {
         try {
           final mtu = await BleService.instance.requestMtu(deviceId, 247);
           debugPrint('Negotiated MTU: $mtu');
+
           if (mtu - 3 < 32) {
             if (!mounted) return;
             Navigator.pop(context);
@@ -92,8 +94,9 @@ class _BleScanScreenState extends State<BleScanScreen> {
             return;
           }
 
-          // 🔑 DISCOVER SERVICES FIRST
+          // 🔑 DISCOVER SERVICES
           await BleService.instance.discoverServices(deviceId);
+          await BleService.instance.primeSerialCharacteristic(deviceId);
 
           BleService.instance.subscribeStatus(deviceId).listen((code) {
             debugPrint('Status notify: 0x${code.toRadixString(16)}');
@@ -101,7 +104,6 @@ class _BleScanScreenState extends State<BleScanScreen> {
 
           if (!mounted) return;
           Navigator.pop(context);
-          _connSub?.cancel();
 
           Navigator.push(
             context,
@@ -109,25 +111,18 @@ class _BleScanScreenState extends State<BleScanScreen> {
               builder: (_) => EvseDetailsScreen(deviceId: deviceId),
             ),
           );
-
         } catch (e) {
-          debugPrint('MTU negotiation failed: $e');
           if (!mounted) return;
           Navigator.pop(context);
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Connection failed: $e')),
+          );
         }
-      } else if (update.connectionState == DeviceConnectionState.disconnected) {
-        debugPrint('Disconnected from $deviceId');
       }
-    }, onError: (err) {
-      debugPrint('Connect error: $err');
-      if (!mounted) return;
-      Navigator.pop(context);
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Failed to connect')),
-      );
     });
   }
 
+  // ✅ MUST BE HERE (CLASS LEVEL)
   Widget _deviceTile(DiscoveredDevice d) {
     final selected = _selectedDevice?.id == d.id;
 
