@@ -45,6 +45,7 @@ class BleProtocol {
 
   // Build the 32-byte config packet (must match firmware)
   static List<int> buildConfigPacket({
+    required String serial,
     required String chargerType,
     required int connectorCount,
     required int overVoltage,
@@ -75,7 +76,11 @@ class BleProtocol {
     // Header & version
     b.setUint8(0, EVSEConfig.packetHeader);
     b.setUint8(1, EVSEConfig.packetVersion);
-
+    // Serial number (ASCII, max 8 bytes, padded)
+    final serialBytes = serial.codeUnits;
+    for (int i = 0; i < 8; i++) {
+      b.setUint8(2 + i, i < serialBytes.length ? serialBytes[i] : 0x00);
+    }
     // Charger type & connector count
     final type = chargerTypeEnum[chargerType] ?? 0;
     b.setUint8(2, type);

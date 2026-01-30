@@ -72,8 +72,13 @@ class _EvseDetailsScreenState extends State<EvseDetailsScreen>
   @override
   void dispose() {
     _statusSub?.cancel();
+
+    // 🔌 Properly disconnect BLE when leaving EVSE screen
+    BleService.instance.disconnect();
+
     super.dispose();
   }
+
 
   void _subscribeStatus() {
     _statusSub = BleService.instance
@@ -111,16 +116,10 @@ class _EvseDetailsScreenState extends State<EvseDetailsScreen>
     setState(() => _saving = true);
 
     try {
-      // Write serial and charger name as UTF-8 string (concatenate with separator)
-      final serialPayload = serialCtrl.text;
-      await BleService.instance.writeStringCharacteristic(
-        widget.deviceId,
-        EVSEConfig.serialUuid,
-        serialPayload,
-      );
 
       // Build 32-byte packet
       final packet = BleProtocol.buildConfigPacket(
+        serial: serialCtrl.text,
         chargerType: chargerTypeCtrl.text,
         connectorCount: int.parse(connectorCountCtrl.text),
         overVoltage: overVoltage,
