@@ -86,29 +86,14 @@ class BleService {
     );
   }
 
-  Future<void> primeSerialCharacteristic(String deviceId) async {
-    final characteristic = QualifiedCharacteristic(
-      deviceId: deviceId,
-      serviceId: EVSEConfig.serviceUuid,
-      characteristicId: EVSEConfig.serialUuid,
-    );
-
-    // Dummy read to force Android to discover the characteristic
-    try {
-      await _ble.readCharacteristic(characteristic);
-    } catch (_) {
-      // Ignore read failure – discovery side-effect is what we need
-    }
-  }
-
   // ================= WRITE CONFIG (32 bytes) =================
   Future<void> writeConfigPacket(String deviceId, List<int> packet) async {
 
     if (!isGattReady(deviceId)) {
       throw Exception('BLE GATT not ready');
     }
-    final mtu = _deviceMtu[deviceId] ?? 23; // default ATT MTU 23
-    // ATT payload = MTU - 3; ensure payload >= 32
+    final mtu = _deviceMtu[deviceId] ?? 23; // defa ult ATT MTU 23
+    // ATT payload = MTU - 3; ensure payload >= 32`
     final payloadSize = mtu - 3;
     if (payloadSize < EVSEConfig.configPacketLength) {
       // If MTU too small, still attempt write but warn caller

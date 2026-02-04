@@ -5,9 +5,6 @@ class EVSEConfig {
   static final Uuid serviceUuid =
   Uuid.parse("12345678-1234-5678-1234-56789abcdef0");
 
-  static final Uuid serialUuid =
-  Uuid.parse("12345678-1234-5678-1234-56789abcdef1");
-
   static final Uuid configUuid =
   Uuid.parse("12345678-1234-5678-1234-56789abcde22");
 

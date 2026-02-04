@@ -96,7 +96,6 @@ class _BleScanScreenState extends State<BleScanScreen> {
 
           // 🔑 DISCOVER SERVICES
           await BleService.instance.discoverServices(deviceId);
-          await BleService.instance.primeSerialCharacteristic(deviceId);
 
           BleService.instance.subscribeStatus(deviceId).listen((code) {
             debugPrint('Status notify: 0x${code.toRadixString(16)}');
