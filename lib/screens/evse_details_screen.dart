@@ -119,7 +119,6 @@ class _EvseDetailsScreenState extends State<EvseDetailsScreen>
 
       // Build 32-byte packet
       final packet = BleProtocol.buildConfigPacket(
-        serial: serialCtrl.text,
         chargerType: chargerTypeCtrl.text,
         connectorCount: int.parse(connectorCountCtrl.text),
         overVoltage: overVoltage,
