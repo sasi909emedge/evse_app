@@ -1,19 +1,23 @@
 import 'package:flutter_reactive_ble/flutter_reactive_ble.dart';
 
 class EVSEConfig {
-  // Service and characteristic UUIDs (match firmware)
-  static final Uuid serviceUuid =
-  Uuid.parse("12345678-1234-5678-1234-56789abcdef0");
 
-  static final Uuid configUuid =
-  Uuid.parse("12345678-1234-5678-1234-56789abcde22");
+  /// ================= READ (DEVICE → APP) =================
+  /// Firmware sends notifications / data here
+  static final Uuid readServiceUuid =
+  Uuid.parse('00001000-0000-1000-8000-00805f9b34fb');
 
-  static final Uuid chargingStatusUuid =
-  Uuid.parse("12345678-1234-5678-1234-56789abcde07");
+  static final Uuid readCharUuid =
+  Uuid.parse('00001001-0000-1000-8000-00805f9b34fb');
 
-  // Packet constants
-  static const int configPacketLength = 32;
-  static const int packetHeader = 0xA5;
-  static const int packetVersion = 0x01;
+
+  /// ================= WRITE (APP → DEVICE) =================
+  /// App sends JSON commands here
+  static final Uuid writeServiceUuid =
+  Uuid.parse('00002000-0000-1000-8000-00805f9b34fb');
+
+  static final Uuid writeCharUuid =
+  Uuid.parse('00002001-0000-1000-8000-00805f9b34fb');
 }
+
 

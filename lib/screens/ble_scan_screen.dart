@@ -68,6 +68,9 @@ class _BleScanScreenState extends State<BleScanScreen> {
 
     final deviceId = _selectedDevice!.id;
 
+    /// ⭐ STOP SCAN BEFORE CONNECT (VERY IMPORTANT)
+    await _scanSub?.cancel();
+
     showDialog(
       context: context,
       barrierDismissible: false,
@@ -75,33 +78,27 @@ class _BleScanScreenState extends State<BleScanScreen> {
     );
 
     _connSub?.cancel();
+
     _connSub = BleService.instance
         .connectToDevice(deviceId)
         .listen((update) async {
+
       debugPrint('Connection state: ${update.connectionState}');
 
+      /// ✅ CONNECTED
       if (update.connectionState == DeviceConnectionState.connected) {
         try {
-          final mtu = await BleService.instance.requestMtu(deviceId, 247);
-          debugPrint('Negotiated MTU: $mtu');
 
-          if (mtu - 3 < 32) {
-            if (!mounted) return;
-            Navigator.pop(context);
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text('MTU too small for config packet')),
-            );
-            return;
-          }
+          /// ⭐ Small delay helps many BLE chipsets stabilize
+          await Future.delayed(const Duration(milliseconds: 500));
 
-          // 🔑 DISCOVER SERVICES
+          /// ⭐ CRITICAL — DISCOVER SERVICES FIRST
           await BleService.instance.discoverServices(deviceId);
 
-          BleService.instance.subscribeStatus(deviceId).listen((code) {
-            debugPrint('Status notify: 0x${code.toRadixString(16)}');
-          });
+          debugPrint("✅ GATT DISCOVERY COMPLETE");
 
           if (!mounted) return;
+
           Navigator.pop(context);
 
           Navigator.push(
@@ -110,18 +107,32 @@ class _BleScanScreenState extends State<BleScanScreen> {
               builder: (_) => EvseDetailsScreen(deviceId: deviceId),
             ),
           );
+
         } catch (e) {
+
           if (!mounted) return;
           Navigator.pop(context);
+
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(content: Text('Connection failed: $e')),
           );
         }
       }
+
+      /// ✅ HANDLE FAILURE STATES
+      if (update.connectionState == DeviceConnectionState.disconnected) {
+
+        if (!mounted) return;
+
+        Navigator.pop(context);
+
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Device disconnected')),
+        );
+      }
     });
   }
 
-  // ✅ MUST BE HERE (CLASS LEVEL)
   Widget _deviceTile(DiscoveredDevice d) {
     final selected = _selectedDevice?.id == d.id;
 
