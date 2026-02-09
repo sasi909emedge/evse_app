@@ -32,8 +32,10 @@ class BleService {
     );
   }
 
-  // ================= DISCOVER =================
+  // ================= DISCOVER + VERIFY =================
   Future<void> discoverServices(String deviceId) async {
+    debugPrint("🔍 Discovering services...");
+
     await _ble.discoverAllServices(deviceId);
 
     final services = await _ble.getDiscoveredServices(deviceId);
@@ -42,9 +44,40 @@ class BleService {
       throw Exception("No GATT services discovered");
     }
 
+    bool writeFound = false;
+    bool readFound = false;
+
+    for (final s in services) {
+      if (s.deviceId == EVSEConfig.deviceWriteServiceUuid) {
+        for (final c in s.characteristics) {
+          if (c.characteristicId ==
+              EVSEConfig.deviceWriteCharacteristicUuid) {
+            writeFound = true;
+          }
+        }
+      }
+
+      if (s.deviceId == EVSEConfig.deviceReadServiceUuid) {
+        for (final c in s.characteristics) {
+          if (c.serviceId ==
+              EVSEConfig.deviceReadCharacteristicUuid) {
+            readFound = true;
+          }
+        }
+      }
+    }
+
+    if (!writeFound) {
+      throw Exception("WRITE characteristic NOT FOUND");
+    }
+
+    if (!readFound) {
+      throw Exception("READ characteristic NOT FOUND");
+    }
+
     _gattReady[deviceId] = true;
 
-    debugPrint("✅ GATT READY for $deviceId");
+    debugPrint("✅ GATT FULLY READY");
   }
 
   bool isGattReady(String deviceId) {
@@ -57,12 +90,12 @@ class BleService {
       Map<String, dynamic> json,
       ) async {
     if (!isGattReady(deviceId)) {
-      throw Exception("BLE not ready");
+      throw Exception("BLE not ready — services missing");
     }
 
     final characteristic = QualifiedCharacteristic(
-      serviceId: EVSEConfig.writeServiceUuid,
-      characteristicId: EVSEConfig.writeCharUuid,
+      serviceId: EVSEConfig.deviceWriteServiceUuid,
+      characteristicId: EVSEConfig.deviceWriteCharacteristicUuid,
       deviceId: deviceId,
     );
 
@@ -81,11 +114,11 @@ class BleService {
   Stream<List<int>> subscribeToDevice(String deviceId) {
     final characteristic = QualifiedCharacteristic(
       deviceId: deviceId,
-      serviceId: EVSEConfig.readServiceUuid,
-      characteristicId: EVSEConfig.readCharUuid,
+      serviceId: EVSEConfig.deviceReadServiceUuid,
+      characteristicId: EVSEConfig.deviceReadCharacteristicUuid,
     );
 
-    debugPrint("👂 Subscribing to device notifications");
+    debugPrint("👂 Listening for device updates...");
 
     return _ble.subscribeToCharacteristic(characteristic);
   }
