@@ -94,6 +94,7 @@ class _BleScanScreenState extends State<BleScanScreen> {
 
           /// ⭐ CRITICAL — DISCOVER SERVICES FIRST
           await BleService.instance.discoverServices(deviceId);
+          await Future.delayed(const Duration(milliseconds: 300));
 
           debugPrint("✅ GATT DISCOVERY COMPLETE");
 
