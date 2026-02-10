@@ -9,9 +9,9 @@ class BleService {
   static final BleService instance = BleService._internal();
 
   final FlutterReactiveBle _ble = FlutterReactiveBle();
-  StreamSubscription<ConnectionStateUpdate>? _connectionSub;
 
   final Map<String, bool> _gattReady = {};
+  final Map<String, StreamSubscription<List<int>>> _notifySubs = {};
 
   // ================= SCAN =================
   Stream<DiscoveredDevice> scanDevices() {
@@ -23,44 +23,40 @@ class BleService {
 
   // ================= CONNECT =================
   Stream<ConnectionStateUpdate> connectToDevice(String deviceId) {
-    _connectionSub?.cancel();
-    _connectionSub = null;
+    debugPrint("🔵 Connecting to $deviceId");
 
     return _ble.connectToDevice(
       id: deviceId,
-      connectionTimeout: const Duration(seconds: 10),
+      connectionTimeout: const Duration(seconds: 15),
     );
   }
 
-  // ================= DISCOVER + VERIFY =================
+  // ================= DISCOVER =================
   Future<void> discoverServices(String deviceId) async {
     debugPrint("🔍 Discovering services...");
+
+    /// Android BLE stack needs breathing room
+    await Future.delayed(const Duration(milliseconds: 700));
 
     await _ble.discoverAllServices(deviceId);
 
     final services = await _ble.getDiscoveredServices(deviceId);
 
-    if (services.isEmpty) {
-      throw Exception("No GATT services discovered");
-    }
-
     bool writeFound = false;
     bool readFound = false;
 
     for (final s in services) {
-      if (s.deviceId == EVSEConfig.deviceWriteServiceUuid) {
+      if (s.id == EVSEConfig.writeServiceUuid) {
         for (final c in s.characteristics) {
-          if (c.characteristicId ==
-              EVSEConfig.deviceWriteCharacteristicUuid) {
+          if (c.id == EVSEConfig.writeCharUuid) {
             writeFound = true;
           }
         }
       }
 
-      if (s.deviceId == EVSEConfig.deviceReadServiceUuid) {
+      if (s.id == EVSEConfig.readServiceUuid) {
         for (final c in s.characteristics) {
-          if (c.serviceId ==
-              EVSEConfig.deviceReadCharacteristicUuid) {
+          if (c.id == EVSEConfig.readCharUuid) {
             readFound = true;
           }
         }
@@ -77,25 +73,25 @@ class BleService {
 
     _gattReady[deviceId] = true;
 
-    debugPrint("✅ GATT FULLY READY");
+    debugPrint("✅ GATT READY — DEVICE IS SAFE");
   }
 
   bool isGattReady(String deviceId) {
     return _gattReady[deviceId] == true;
   }
 
-  // ================= WRITE JSON =================
+  // ================= WRITE =================
   Future<void> writeJson(
       String deviceId,
       Map<String, dynamic> json,
       ) async {
     if (!isGattReady(deviceId)) {
-      throw Exception("BLE not ready — services missing");
+      throw Exception("BLE not ready");
     }
 
     final characteristic = QualifiedCharacteristic(
-      serviceId: EVSEConfig.deviceWriteServiceUuid,
-      characteristicId: EVSEConfig.deviceWriteCharacteristicUuid,
+      serviceId: EVSEConfig.writeServiceUuid,
+      characteristicId: EVSEConfig.writeCharUuid,
       deviceId: deviceId,
     );
 
@@ -104,28 +100,37 @@ class BleService {
 
     debugPrint("⬆️ WRITING JSON: $jsonString");
 
+    /// Prevent Android race condition
+    await Future.delayed(const Duration(milliseconds: 150));
+
     await _ble.writeCharacteristicWithResponse(
       characteristic,
       value: bytes,
     );
   }
 
-  // ================= READ / NOTIFY =================
+  // ================= READ / SUBSCRIBE =================
   Stream<List<int>> subscribeToDevice(String deviceId) {
     final characteristic = QualifiedCharacteristic(
       deviceId: deviceId,
-      serviceId: EVSEConfig.deviceReadServiceUuid,
-      characteristicId: EVSEConfig.deviceReadCharacteristicUuid,
+      serviceId: EVSEConfig.readServiceUuid,
+      characteristicId: EVSEConfig.readCharUuid,
     );
 
-    debugPrint("👂 Listening for device updates...");
+    debugPrint("👂 Subscribing to notifications");
 
-    return _ble.subscribeToCharacteristic(characteristic);
+    final stream = _ble.subscribeToCharacteristic(characteristic);
+
+    return stream;
   }
 
-  // ================= DISCONNECT =================
-  void disconnect() {
-    _connectionSub?.cancel();
-    _connectionSub = null;
+  // ================= CLEAN DISCONNECT =================
+  void disconnect(String deviceId) {
+    debugPrint("🔌 Cleaning BLE state");
+
+    _notifySubs[deviceId]?.cancel();
+    _notifySubs.remove(deviceId);
+
+    _gattReady.remove(deviceId);
   }
 }
