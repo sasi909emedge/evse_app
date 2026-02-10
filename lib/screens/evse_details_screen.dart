@@ -14,37 +14,43 @@ class EvseDetailsScreen extends StatefulWidget {
 }
 
 class _EvseDetailsScreenState extends State<EvseDetailsScreen> {
-
   StreamSubscription<List<int>>? _deviceSub;
 
   final serialCtrl = TextEditingController();
   final tempCtrl = TextEditingController();
 
-  String chargingStatus = "Waiting for device...";
+  String chargingStatus = "Connecting to device...";
   bool editMode = false;
   bool _saving = false;
 
-  // ================= INIT =================
   @override
   void initState() {
     super.initState();
 
+    _startListening();
+  }
+
+  void _startListening() async {
+    /// Wait until GATT is ready
+    while (!BleService.instance.isGattReady(widget.deviceId)) {
+      await Future.delayed(const Duration(milliseconds: 200));
+    }
+
     _deviceSub = BleService.instance
         .subscribeToDevice(widget.deviceId)
         .listen((data) {
-
       try {
-        final jsonString = utf8.decode(data);
-        final decoded = jsonDecode(jsonString);
+        final decoded = jsonDecode(utf8.decode(data));
 
         debugPrint("✅ DEVICE JSON: $decoded");
+
+        if (!mounted) return;
 
         setState(() {
           serialCtrl.text = decoded['serialNumber']?.toString() ?? "";
           tempCtrl.text = decoded['temperature']?.toString() ?? "";
 
-          chargingStatus =
-          "Serial: ${serialCtrl.text}\nTemp: ${tempCtrl.text}°C";
+          chargingStatus = "Connected ✅";
         });
 
       } catch (e) {
@@ -53,26 +59,17 @@ class _EvseDetailsScreenState extends State<EvseDetailsScreen> {
     });
   }
 
-  // ================= DISPOSE =================
   @override
   void dispose() {
     _deviceSub?.cancel();
-    BleService.instance.disconnect();
+    BleService.instance.disconnect(widget.deviceId);
     super.dispose();
   }
 
-  // ================= SAVE =================
   Future<void> _save() async {
-
-    if (!BleService.instance.isGattReady(widget.deviceId)) {
-      _showError("BLE not ready");
-      return;
-    }
-
     setState(() => _saving = true);
 
     try {
-
       await BleService.instance.writeJson(
         widget.deviceId,
         {
@@ -81,7 +78,7 @@ class _EvseDetailsScreenState extends State<EvseDetailsScreen> {
         },
       );
 
-      _showMessage("Device updated successfully");
+      _showMessage("Saved to device ✅");
 
     } catch (e) {
       _showError("Write failed: $e");
@@ -92,7 +89,6 @@ class _EvseDetailsScreenState extends State<EvseDetailsScreen> {
     }
   }
 
-  // ================= UI HELPERS =================
   void _showMessage(String msg) {
     ScaffoldMessenger.of(context)
         .showSnackBar(SnackBar(content: Text(msg)));
@@ -106,8 +102,9 @@ class _EvseDetailsScreenState extends State<EvseDetailsScreen> {
         content: Text(msg),
         actions: [
           TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text("OK"))
+            onPressed: () => Navigator.pop(context),
+            child: const Text("OK"),
+          )
         ],
       ),
     );
@@ -123,7 +120,6 @@ class _EvseDetailsScreenState extends State<EvseDetailsScreen> {
     );
   }
 
-  // ================= UI =================
   @override
   Widget build(BuildContext context) {
     return Scaffold(
