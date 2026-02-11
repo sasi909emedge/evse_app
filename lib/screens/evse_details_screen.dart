@@ -14,6 +14,7 @@ class EvseDetailsScreen extends StatefulWidget {
 }
 
 class _EvseDetailsScreenState extends State<EvseDetailsScreen> {
+
   StreamSubscription<List<int>>? _deviceSub;
 
   final serialCtrl = TextEditingController();
@@ -23,40 +24,58 @@ class _EvseDetailsScreenState extends State<EvseDetailsScreen> {
   bool editMode = false;
   bool _saving = false;
 
+  // ⭐ LOAD DEVICE STATE (REAL READ)
+  Future<void> _loadDeviceState() async {
+    try {
+
+      final data =
+      await BleService.instance.readJson(widget.deviceId);
+
+      setState(() {
+        serialCtrl.text = data['serialNumber']?.toString() ?? "";
+        tempCtrl.text = data['temperature']?.toString() ?? "";
+
+        chargingStatus =
+        "Serial: ${serialCtrl.text}\nTemp: ${tempCtrl.text}°C";
+      });
+
+    } catch (e) {
+      debugPrint("READ failed: $e");
+    }
+  }
+
   @override
   void initState() {
     super.initState();
 
-    _startListening();
-  }
-
-  void _startListening() async {
-    /// Wait until GATT is ready
-    while (!BleService.instance.isGattReady(widget.deviceId)) {
-      await Future.delayed(const Duration(milliseconds: 200));
-    }
-
+    /// Listen for live updates
     _deviceSub = BleService.instance
         .subscribeToDevice(widget.deviceId)
         .listen((data) {
+
       try {
-        final decoded = jsonDecode(utf8.decode(data));
-
-        debugPrint("✅ DEVICE JSON: $decoded");
-
-        if (!mounted) return;
+        final decoded =
+        jsonDecode(utf8.decode(data));
 
         setState(() {
-          serialCtrl.text = decoded['serialNumber']?.toString() ?? "";
-          tempCtrl.text = decoded['temperature']?.toString() ?? "";
+          serialCtrl.text =
+              decoded['serialNumber']?.toString() ?? "";
 
-          chargingStatus = "Connected ✅";
+          tempCtrl.text =
+              decoded['temperature']?.toString() ?? "";
+
+          chargingStatus =
+          "Serial: ${serialCtrl.text}\nTemp: ${tempCtrl.text}°C";
         });
 
-      } catch (e) {
-        debugPrint("JSON parse error: $e");
-      }
+      } catch (_) {}
     });
+
+    /// ⭐ TRUE GET (matches nRF arrow)
+    Future.delayed(
+      const Duration(milliseconds: 500),
+      _loadDeviceState,
+    );
   }
 
   @override
@@ -66,19 +85,31 @@ class _EvseDetailsScreenState extends State<EvseDetailsScreen> {
     super.dispose();
   }
 
+  // ================= SAVE =================
   Future<void> _save() async {
+
+    if (!BleService.instance.isGattReady(widget.deviceId)) {
+      _showError("BLE not ready");
+      return;
+    }
+
     setState(() => _saving = true);
 
     try {
+
       await BleService.instance.writeJson(
         widget.deviceId,
         {
-          "temperature": int.tryParse(tempCtrl.text) ?? 0,
+          "temperature": double.tryParse(tempCtrl.text) ?? 0,
           "serialNumber": serialCtrl.text,
         },
       );
 
-      _showMessage("Saved to device ✅");
+      /// ⭐ VERIFY WRITE WITH READ
+      await Future.delayed(const Duration(milliseconds: 250));
+      await _loadDeviceState();
+
+      _showMessage("Device updated successfully");
 
     } catch (e) {
       _showError("Write failed: $e");
@@ -102,9 +133,8 @@ class _EvseDetailsScreenState extends State<EvseDetailsScreen> {
         content: Text(msg),
         actions: [
           TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text("OK"),
-          )
+              onPressed: () => Navigator.pop(context),
+              child: const Text("OK"))
         ],
       ),
     );
@@ -163,7 +193,7 @@ class _EvseDetailsScreenState extends State<EvseDetailsScreen> {
                 editMode
                     ? TextField(
                   controller: tempCtrl,
-                  keyboardType: TextInputType.number,
+                  keyboardType: const TextInputType.numberWithOptions(decimal: true),
                 )
                     : Text("${tempCtrl.text} °C"),
               ),

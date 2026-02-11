@@ -11,7 +11,6 @@ class BleService {
   final FlutterReactiveBle _ble = FlutterReactiveBle();
 
   final Map<String, bool> _gattReady = {};
-  final Map<String, StreamSubscription<List<int>>> _notifySubs = {};
 
   // ================= SCAN =================
   Stream<DiscoveredDevice> scanDevices() {
@@ -35,7 +34,6 @@ class BleService {
   Future<void> discoverServices(String deviceId) async {
     debugPrint("🔍 Discovering services...");
 
-    /// Android BLE stack needs breathing room
     await Future.delayed(const Duration(milliseconds: 700));
 
     await _ble.discoverAllServices(deviceId);
@@ -73,7 +71,7 @@ class BleService {
 
     _gattReady[deviceId] = true;
 
-    debugPrint("✅ GATT READY — DEVICE IS SAFE");
+    debugPrint("✅ GATT READY — DEVICE SAFE");
   }
 
   bool isGattReady(String deviceId) {
@@ -85,6 +83,7 @@ class BleService {
       String deviceId,
       Map<String, dynamic> json,
       ) async {
+
     if (!isGattReady(deviceId)) {
       throw Exception("BLE not ready");
     }
@@ -98,9 +97,8 @@ class BleService {
     final jsonString = jsonEncode(json);
     final bytes = utf8.encode(jsonString);
 
-    debugPrint("⬆️ WRITING JSON: $jsonString");
+    debugPrint("⬆️ WRITE: $jsonString");
 
-    /// Prevent Android race condition
     await Future.delayed(const Duration(milliseconds: 150));
 
     await _ble.writeCharacteristicWithResponse(
@@ -109,28 +107,47 @@ class BleService {
     );
   }
 
-  // ================= READ / SUBSCRIBE =================
-  Stream<List<int>> subscribeToDevice(String deviceId) {
+  // ================= ⭐ TRUE READ =================
+  Future<Map<String, dynamic>> readJson(String deviceId) async {
+
+    if (!isGattReady(deviceId)) {
+      throw Exception("BLE not ready");
+    }
+
     final characteristic = QualifiedCharacteristic(
       deviceId: deviceId,
       serviceId: EVSEConfig.readServiceUuid,
       characteristicId: EVSEConfig.readCharUuid,
     );
 
-    debugPrint("👂 Subscribing to notifications");
+    debugPrint("📥 Performing BLE READ...");
 
-    final stream = _ble.subscribeToCharacteristic(characteristic);
+    final data = await _ble.readCharacteristic(characteristic);
 
-    return stream;
+    final jsonString = utf8.decode(data);
+
+    debugPrint("✅ READ JSON: $jsonString");
+
+    return jsonDecode(jsonString);
   }
 
-  // ================= CLEAN DISCONNECT =================
+  // ================= NOTIFY =================
+  Stream<List<int>> subscribeToDevice(String deviceId) {
+
+    final characteristic = QualifiedCharacteristic(
+      deviceId: deviceId,
+      serviceId: EVSEConfig.readServiceUuid,
+      characteristicId: EVSEConfig.readCharUuid,
+    );
+
+    debugPrint("👂 Listening for notifications");
+
+    return _ble.subscribeToCharacteristic(characteristic);
+  }
+
+  // ================= DISCONNECT =================
   void disconnect(String deviceId) {
-    debugPrint("🔌 Cleaning BLE state");
-
-    _notifySubs[deviceId]?.cancel();
-    _notifySubs.remove(deviceId);
-
+    debugPrint("🔌 Clearing BLE state");
     _gattReady.remove(deviceId);
   }
 }
