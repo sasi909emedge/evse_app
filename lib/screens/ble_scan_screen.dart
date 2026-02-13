@@ -68,7 +68,6 @@ class _BleScanScreenState extends State<BleScanScreen> {
 
     final deviceId = _selectedDevice!.id;
 
-    /// ⭐ STOP SCAN BEFORE CONNECT (VERY IMPORTANT)
     await _scanSub?.cancel();
 
     showDialog(
@@ -83,29 +82,26 @@ class _BleScanScreenState extends State<BleScanScreen> {
         .connectToDevice(deviceId)
         .listen((update) async {
 
-      debugPrint('Connection state: ${update.connectionState}');
-
-      /// ✅ CONNECTED
-      if (update.connectionState == DeviceConnectionState.connected) {
+      if (update.connectionState ==
+          DeviceConnectionState.connected) {
         try {
 
-          /// ⭐ Small delay helps many BLE chipsets stabilize
-          await Future.delayed(const Duration(milliseconds: 500));
+          await Future.delayed(
+              const Duration(milliseconds: 400));
 
-          /// ⭐ CRITICAL — DISCOVER SERVICES FIRST
           await BleService.instance.discoverServices(deviceId);
-          await Future.delayed(const Duration(milliseconds: 300));
-
-          debugPrint("✅ GATT DISCOVERY COMPLETE");
 
           if (!mounted) return;
+
+          await _connSub?.cancel();   // ⭐ CRITICAL FIX
 
           Navigator.pop(context);
 
           Navigator.push(
             context,
             MaterialPageRoute(
-              builder: (_) => EvseDetailsScreen(deviceId: deviceId),
+              builder: (_) =>
+                  EvseDetailsScreen(deviceId: deviceId),
             ),
           );
 
@@ -120,8 +116,8 @@ class _BleScanScreenState extends State<BleScanScreen> {
         }
       }
 
-      /// ✅ HANDLE FAILURE STATES
-      if (update.connectionState == DeviceConnectionState.disconnected) {
+      if (update.connectionState ==
+          DeviceConnectionState.disconnected) {
 
         if (!mounted) return;
 

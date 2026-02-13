@@ -1,5 +1,3 @@
-import 'dart:async';
-import 'dart:convert';
 import 'package:flutter/material.dart';
 import '../ble/ble_service.dart';
 import '../theme/app_colors.dart';
@@ -15,32 +13,67 @@ class EvseDetailsScreen extends StatefulWidget {
 
 class _EvseDetailsScreenState extends State<EvseDetailsScreen> {
 
-  StreamSubscription<List<int>>? _deviceSub;
-
   final serialCtrl = TextEditingController();
-  final tempCtrl = TextEditingController();
+  final chargerNameCtrl = TextEditingController();
+  final vendorCtrl = TextEditingController();
+  final modelCtrl = TextEditingController();
+  final commissionedByCtrl = TextEditingController();
+  final commissionedDateCtrl = TextEditingController();
+  final wsUrlCtrl = TextEditingController();
 
-  String chargingStatus = "Connecting to device...";
+  String chargerType = "AC1";
+
   bool editMode = false;
   bool _saving = false;
+  bool _loading = true;
 
-  // ⭐ LOAD DEVICE STATE (REAL READ)
+  final List<String> chargerTypes = [
+    "AC1","AC2","AC3","DC1","DC2","DC3"
+  ];
+
+  // ================= LOAD =================
   Future<void> _loadDeviceState() async {
+
     try {
+
+      /// Wait until BLE is actually ready
+      int retry = 0;
+
+      while (!BleService.instance.isGattReady(widget.deviceId)) {
+        await Future.delayed(const Duration(milliseconds: 250));
+        retry++;
+
+        if (retry > 12) {
+          throw Exception("BLE not ready");
+        }
+      }
 
       final data =
       await BleService.instance.readJson(widget.deviceId);
 
-      setState(() {
-        serialCtrl.text = data['serialNumber']?.toString() ?? "";
-        tempCtrl.text = data['temperature']?.toString() ?? "";
+      if (!mounted) return;
 
-        chargingStatus =
-        "Serial: ${serialCtrl.text}\nTemp: ${tempCtrl.text}°C";
+      setState(() {
+
+        serialCtrl.text = data['serialNumber'] ?? "";
+        chargerNameCtrl.text = data['chargerName'] ?? "";
+        vendorCtrl.text = data['chargePointVendor'] ?? "";
+        modelCtrl.text = data['chargePointModel'] ?? "";
+        commissionedByCtrl.text = data['commissionedBy'] ?? "";
+        commissionedDateCtrl.text = data['commissionedDate'] ?? "";
+        wsUrlCtrl.text = data['webSocketURL'] ?? "";
+        chargerType = data['chargerType'] ?? "AC1";
+
+        _loading = false;
       });
 
     } catch (e) {
+
       debugPrint("READ failed: $e");
+
+      if (mounted) {
+        setState(() => _loading = false);
+      }
     }
   }
 
@@ -48,50 +81,28 @@ class _EvseDetailsScreenState extends State<EvseDetailsScreen> {
   void initState() {
     super.initState();
 
-    /// Listen for live updates
-    _deviceSub = BleService.instance
-        .subscribeToDevice(widget.deviceId)
-        .listen((data) {
-
-      try {
-        final decoded =
-        jsonDecode(utf8.decode(data));
-
-        setState(() {
-          serialCtrl.text =
-              decoded['serialNumber']?.toString() ?? "";
-
-          tempCtrl.text =
-              decoded['temperature']?.toString() ?? "";
-
-          chargingStatus =
-          "Serial: ${serialCtrl.text}\nTemp: ${tempCtrl.text}°C";
-        });
-
-      } catch (_) {}
-    });
-
-    /// ⭐ TRUE GET (matches nRF arrow)
-    Future.delayed(
-      const Duration(milliseconds: 500),
-      _loadDeviceState,
-    );
+    /// Start immediately — no random delays
+    _loadDeviceState();
   }
 
   @override
   void dispose() {
-    _deviceSub?.cancel();
+
+    serialCtrl.dispose();
+    chargerNameCtrl.dispose();
+    vendorCtrl.dispose();
+    modelCtrl.dispose();
+    commissionedByCtrl.dispose();
+    commissionedDateCtrl.dispose();
+    wsUrlCtrl.dispose();
+
     BleService.instance.disconnect(widget.deviceId);
+
     super.dispose();
   }
 
   // ================= SAVE =================
   Future<void> _save() async {
-
-    if (!BleService.instance.isGattReady(widget.deviceId)) {
-      _showError("BLE not ready");
-      return;
-    }
 
     setState(() => _saving = true);
 
@@ -100,108 +111,163 @@ class _EvseDetailsScreenState extends State<EvseDetailsScreen> {
       await BleService.instance.writeJson(
         widget.deviceId,
         {
-          "temperature": double.tryParse(tempCtrl.text) ?? 0,
-          "serialNumber": serialCtrl.text,
+          "serialNumber": serialCtrl.text.trim(),
+          "chargerName": chargerNameCtrl.text.trim(),
+          "chargePointVendor": vendorCtrl.text.trim(),
+          "chargePointModel": modelCtrl.text.trim(),
+          "commissionedBy": commissionedByCtrl.text.trim(),
+          "commissionedDate": commissionedDateCtrl.text.trim(),
+          "webSocketURL": wsUrlCtrl.text.trim(),
+          "chargerType": chargerType,
         },
       );
 
-      /// ⭐ VERIFY WRITE WITH READ
-      await Future.delayed(const Duration(milliseconds: 250));
       await _loadDeviceState();
 
-      _showMessage("Device updated successfully");
+      if (!mounted) return;
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text("Configuration updated")),
+      );
 
     } catch (e) {
-      _showError("Write failed: $e");
+
+      showDialog(
+        context: context,
+        builder: (_) => AlertDialog(
+          title: const Text("Error"),
+          content: Text("$e"),
+        ),
+      );
+
     } finally {
+
       if (mounted) {
         setState(() => _saving = false);
       }
     }
   }
 
-  void _showMessage(String msg) {
-    ScaffoldMessenger.of(context)
-        .showSnackBar(SnackBar(content: Text(msg)));
-  }
-
-  void _showError(String msg) {
-    showDialog(
-      context: context,
-      builder: (_) => AlertDialog(
-        title: const Text("Error"),
-        content: Text(msg),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text("OK"))
-        ],
-      ),
-    );
-  }
-
   Widget _field(String label, Widget child) {
     return Card(
-      margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-      child: ListTile(
-        title: Text(label),
-        subtitle: child,
+      margin: const EdgeInsets.symmetric(vertical: 6),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(12, 12, 12, 6),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(label,
+                style: const TextStyle(
+                    fontWeight: FontWeight.bold)),
+            child,
+          ],
+        ),
       ),
     );
   }
 
   @override
   Widget build(BuildContext context) {
+
     return Scaffold(
+
+      /// Critical for keyboard
+      resizeToAvoidBottomInset: true,
+
       appBar: AppBar(
         backgroundColor: AppColors.primary,
-        title: const Text("EVSE Device"),
+        title: const Text("EVSE Configuration"),
         actions: [
           IconButton(
             icon: Icon(editMode ? Icons.save : Icons.edit),
             onPressed: () async {
-              if (editMode) {
-                await _save();
-              }
+              if (editMode) await _save();
               setState(() => editMode = !editMode);
             },
           )
         ],
       ),
-      body: Stack(
-        children: [
-          ListView(
-            children: [
 
-              _field(
-                "Device Status",
-                Text(
-                  chargingStatus,
-                  style: const TextStyle(fontWeight: FontWeight.bold),
+      body: Column(
+        children: [
+
+          /// Loader prevents blank UI
+          if (_loading)
+            const Expanded(
+              child: Center(child: CircularProgressIndicator()),
+            )
+          else
+
+            Expanded(
+              child: SingleChildScrollView(
+                padding: EdgeInsets.only(
+                  left: 12,
+                  right: 12,
+                  top: 12,
+                  bottom:
+                  MediaQuery.of(context).viewInsets.bottom + 30,
+                ),
+                child: Column(
+                  children: [
+
+                    _field("Serial Number",
+                        editMode
+                            ? TextField(controller: serialCtrl)
+                            : Text(serialCtrl.text)),
+
+                    _field("Charger Name",
+                        editMode
+                            ? TextField(controller: chargerNameCtrl)
+                            : Text(chargerNameCtrl.text)),
+
+                    _field("Vendor",
+                        editMode
+                            ? TextField(controller: vendorCtrl)
+                            : Text(vendorCtrl.text)),
+
+                    _field("Model",
+                        editMode
+                            ? TextField(controller: modelCtrl)
+                            : Text(modelCtrl.text)),
+
+                    _field("Commissioned By",
+                        editMode
+                            ? TextField(controller: commissionedByCtrl)
+                            : Text(commissionedByCtrl.text)),
+
+                    _field("Commissioned Date",
+                        editMode
+                            ? TextField(controller: commissionedDateCtrl)
+                            : Text(commissionedDateCtrl.text)),
+
+                    _field("WebSocket URL",
+                        editMode
+                            ? TextField(controller: wsUrlCtrl)
+                            : Text(wsUrlCtrl.text)),
+
+                    _field("Charger Type",
+                        editMode
+                            ? DropdownButton<String>(
+                          value: chargerType,
+                          isExpanded: true,
+                          items: chargerTypes
+                              .map((t) => DropdownMenuItem(
+                            value: t,
+                            child: Text(t),
+                          ))
+                              .toList(),
+                          onChanged: (v) =>
+                              setState(() => chargerType = v!),
+                        )
+                            : Text(chargerType)),
+
+                    const SizedBox(height: 40),
+                  ],
                 ),
               ),
+            ),
 
-              _field(
-                "Serial Number",
-                editMode
-                    ? TextField(controller: serialCtrl)
-                    : Text(serialCtrl.text),
-              ),
-
-              _field(
-                "Temperature",
-                editMode
-                    ? TextField(
-                  controller: tempCtrl,
-                  keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                )
-                    : Text("${tempCtrl.text} °C"),
-              ),
-
-              const SizedBox(height: 100),
-            ],
-          ),
-
+          /// Saving overlay
           if (_saving)
             const Positioned.fill(
               child: ColoredBox(
