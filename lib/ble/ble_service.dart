@@ -12,6 +12,14 @@ class BleService {
 
   final Map<String, bool> _gattReady = {};
 
+  /// ⭐ CRITICAL — prevents overlapping BLE calls
+  Future _operation = Future.value();
+
+  Future<T> _queue<T>(Future<T> Function() task) {
+    _operation = _operation.then((_) => task());
+    return _operation as Future<T>;
+  }
+
   // ================= SCAN =================
   Stream<DiscoveredDevice> scanDevices() {
     return _ble.scanForDevices(
@@ -38,6 +46,12 @@ class BleService {
 
     await _ble.discoverAllServices(deviceId);
 
+    /// ⭐ Request bigger MTU (VERY IMPORTANT for JSON)
+    try {
+      await _ble.requestMtu(deviceId: deviceId, mtu: 247);
+      debugPrint("✅ MTU requested");
+    } catch (_) {}
+
     final services = await _ble.getDiscoveredServices(deviceId);
 
     bool writeFound = false;
@@ -61,12 +75,8 @@ class BleService {
       }
     }
 
-    if (!writeFound) {
-      throw Exception("WRITE characteristic NOT FOUND");
-    }
-
-    if (!readFound) {
-      throw Exception("READ characteristic NOT FOUND");
+    if (!writeFound || !readFound) {
+      throw Exception("Required characteristics NOT FOUND");
     }
 
     _gattReady[deviceId] = true;
@@ -83,66 +93,56 @@ class BleService {
       String deviceId,
       Map<String, dynamic> json,
       ) async {
+    return _queue(() async {
+      if (!isGattReady(deviceId)) {
+        throw Exception("BLE not ready");
+      }
 
-    if (!isGattReady(deviceId)) {
-      throw Exception("BLE not ready");
-    }
+      final characteristic = QualifiedCharacteristic(
+        serviceId: EVSEConfig.writeServiceUuid,
+        characteristicId: EVSEConfig.writeCharUuid,
+        deviceId: deviceId,
+      );
 
-    final characteristic = QualifiedCharacteristic(
-      serviceId: EVSEConfig.writeServiceUuid,
-      characteristicId: EVSEConfig.writeCharUuid,
-      deviceId: deviceId,
-    );
+      final jsonString = jsonEncode(json);
+      final bytes = utf8.encode(jsonString);
 
-    final jsonString = jsonEncode(json);
-    final bytes = utf8.encode(jsonString);
+      debugPrint("⬆️ WRITE: $jsonString");
 
-    debugPrint("⬆️ WRITE: $jsonString");
+      await Future.delayed(const Duration(milliseconds: 120));
 
-    await Future.delayed(const Duration(milliseconds: 150));
-
-    await _ble.writeCharacteristicWithResponse(
-      characteristic,
-      value: bytes,
-    );
+      await _ble.writeCharacteristicWithResponse(
+        characteristic,
+        value: bytes,
+      );
+    });
   }
 
-  // ================= ⭐ TRUE READ =================
-  Future<Map<String, dynamic>> readJson(String deviceId) async {
+  // ================= READ =================
+  Future<Map<String, dynamic>> readJson(String deviceId) {
+    return _queue(() async {
+      if (!isGattReady(deviceId)) {
+        throw Exception("BLE not ready");
+      }
 
-    if (!isGattReady(deviceId)) {
-      throw Exception("BLE not ready");
-    }
+      final characteristic = QualifiedCharacteristic(
+        deviceId: deviceId,
+        serviceId: EVSEConfig.readServiceUuid,
+        characteristicId: EVSEConfig.readCharUuid,
+      );
 
-    final characteristic = QualifiedCharacteristic(
-      deviceId: deviceId,
-      serviceId: EVSEConfig.readServiceUuid,
-      characteristicId: EVSEConfig.readCharUuid,
-    );
+      debugPrint("📥 Performing BLE READ...");
 
-    debugPrint("📥 Performing BLE READ...");
+      await Future.delayed(const Duration(milliseconds: 120));
 
-    final data = await _ble.readCharacteristic(characteristic);
+      final data = await _ble.readCharacteristic(characteristic);
 
-    final jsonString = utf8.decode(data);
+      final jsonString = utf8.decode(data);
 
-    debugPrint("✅ READ JSON: $jsonString");
+      debugPrint("✅ READ JSON: $jsonString");
 
-    return jsonDecode(jsonString);
-  }
-
-  // ================= NOTIFY =================
-  Stream<List<int>> subscribeToDevice(String deviceId) {
-
-    final characteristic = QualifiedCharacteristic(
-      deviceId: deviceId,
-      serviceId: EVSEConfig.readServiceUuid,
-      characteristicId: EVSEConfig.readCharUuid,
-    );
-
-    debugPrint("👂 Listening for notifications");
-
-    return _ble.subscribeToCharacteristic(characteristic);
+      return jsonDecode(jsonString);
+    });
   }
 
   // ================= DISCONNECT =================
