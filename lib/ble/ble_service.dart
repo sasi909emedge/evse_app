@@ -12,12 +12,22 @@ class BleService {
 
   final Map<String, bool> _gattReady = {};
 
-  /// ⭐ CRITICAL — prevents overlapping BLE calls
-  Future _operation = Future.value();
+  /// ✅ SAFE SERIAL QUEUE
+  Future<void> _operation = Future.value();
 
   Future<T> _queue<T>(Future<T> Function() task) {
-    _operation = _operation.then((_) => task());
-    return _operation as Future<T>;
+    final completer = Completer<T>();
+
+    _operation = _operation.then((_) async {
+      try {
+        final result = await task();
+        completer.complete(result);
+      } catch (e, s) {
+        completer.completeError(e, s);
+      }
+    });
+
+    return completer.future;
   }
 
   // ================= SCAN =================
@@ -42,11 +52,8 @@ class BleService {
   Future<void> discoverServices(String deviceId) async {
     debugPrint("🔍 Discovering services...");
 
-    await Future.delayed(const Duration(milliseconds: 700));
-
     await _ble.discoverAllServices(deviceId);
 
-    /// ⭐ Request bigger MTU (VERY IMPORTANT for JSON)
     try {
       await _ble.requestMtu(deviceId: deviceId, mtu: 247);
       debugPrint("✅ MTU requested");
@@ -60,17 +67,13 @@ class BleService {
     for (final s in services) {
       if (s.id == EVSEConfig.writeServiceUuid) {
         for (final c in s.characteristics) {
-          if (c.id == EVSEConfig.writeCharUuid) {
-            writeFound = true;
-          }
+          if (c.id == EVSEConfig.writeCharUuid) writeFound = true;
         }
       }
 
       if (s.id == EVSEConfig.readServiceUuid) {
         for (final c in s.characteristics) {
-          if (c.id == EVSEConfig.readCharUuid) {
-            readFound = true;
-          }
+          if (c.id == EVSEConfig.readCharUuid) readFound = true;
         }
       }
     }
@@ -84,19 +87,15 @@ class BleService {
     debugPrint("✅ GATT READY — DEVICE SAFE");
   }
 
-  bool isGattReady(String deviceId) {
-    return _gattReady[deviceId] == true;
-  }
+  bool isGattReady(String deviceId) =>
+      _gattReady[deviceId] == true;
 
   // ================= WRITE =================
   Future<void> writeJson(
       String deviceId,
       Map<String, dynamic> json,
-      ) async {
+      ) {
     return _queue(() async {
-      if (!isGattReady(deviceId)) {
-        throw Exception("BLE not ready");
-      }
 
       final characteristic = QualifiedCharacteristic(
         serviceId: EVSEConfig.writeServiceUuid,
@@ -105,15 +104,11 @@ class BleService {
       );
 
       final jsonString = jsonEncode(json);
-      final bytes = utf8.encode(jsonString);
-
       debugPrint("⬆️ WRITE: $jsonString");
-
-      await Future.delayed(const Duration(milliseconds: 120));
 
       await _ble.writeCharacteristicWithResponse(
         characteristic,
-        value: bytes,
+        value: utf8.encode(jsonString),
       );
     });
   }
@@ -121,9 +116,6 @@ class BleService {
   // ================= READ =================
   Future<Map<String, dynamic>> readJson(String deviceId) {
     return _queue(() async {
-      if (!isGattReady(deviceId)) {
-        throw Exception("BLE not ready");
-      }
 
       final characteristic = QualifiedCharacteristic(
         deviceId: deviceId,
@@ -131,9 +123,7 @@ class BleService {
         characteristicId: EVSEConfig.readCharUuid,
       );
 
-      debugPrint("📥 Performing BLE READ...");
-
-      await Future.delayed(const Duration(milliseconds: 120));
+      debugPrint("📥 Performing BLE READ");
 
       final data = await _ble.readCharacteristic(characteristic);
 
@@ -145,7 +135,6 @@ class BleService {
     });
   }
 
-  // ================= DISCONNECT =================
   void disconnect(String deviceId) {
     debugPrint("🔌 Clearing BLE state");
     _gattReady.remove(deviceId);
