@@ -16,7 +16,7 @@ class _EvseDetailsScreenState extends State<EvseDetailsScreen>
 
   final _scrollController = ScrollController();
 
-  /// controllers (editing only)
+  // ================= CONTROLLERS =================
   final serialCtrl = TextEditingController();
   final chargerNameCtrl = TextEditingController();
   final vendorCtrl = TextEditingController();
@@ -25,7 +25,7 @@ class _EvseDetailsScreenState extends State<EvseDetailsScreen>
   final commissionedDateCtrl = TextEditingController();
   final wsUrlCtrl = TextEditingController();
 
-  /// ⭐ DISPLAY STATE (THIS WAS MISSING)
+  // ================= DISPLAY STATE =================
   String serial = "";
   String chargerName = "";
   String vendor = "";
@@ -39,12 +39,22 @@ class _EvseDetailsScreenState extends State<EvseDetailsScreen>
   bool _saving = false;
   bool editMode = false;
 
+  /// ⭐ CRITICAL — prevents multiple BLE reads
+  bool _isLoadingFromBle = false;
+  bool _initialLoadDone = false;
+
   final chargerTypes = [
     "AC1","AC2","AC3","DC1","DC2","DC3"
   ];
 
-  // ================= LOAD =================
-  Future<void> _loadDeviceState() async {
+  // ================= SAFE LOAD =================
+  Future<void> _loadDeviceState({bool force = false}) async {
+
+    /// prevent duplicate reads
+    if (_isLoadingFromBle) return;
+    if (_initialLoadDone && !force) return;
+
+    _isLoadingFromBle = true;
 
     try {
 
@@ -52,13 +62,11 @@ class _EvseDetailsScreenState extends State<EvseDetailsScreen>
         await Future.delayed(const Duration(milliseconds: 200));
       }
 
-      await Future.delayed(const Duration(milliseconds: 350));
       final data =
       await BleService.instance.readJson(widget.deviceId);
 
       if (!mounted) return;
 
-      /// ⭐ UPDATE STATE VARIABLES
       setState(() {
 
         serial = data['serialNumber'] ?? "";
@@ -70,7 +78,7 @@ class _EvseDetailsScreenState extends State<EvseDetailsScreen>
         webSocketURL = data['webSocketURL'] ?? "";
         chargerType = data['chargerType'] ?? "AC1";
 
-        /// sync controllers
+        /// sync editors
         serialCtrl.text = serial;
         chargerNameCtrl.text = chargerName;
         vendorCtrl.text = vendor;
@@ -80,11 +88,14 @@ class _EvseDetailsScreenState extends State<EvseDetailsScreen>
         wsUrlCtrl.text = webSocketURL;
 
         _loading = false;
+        _initialLoadDone = true;
       });
 
     } catch (e) {
       debugPrint("LOAD ERROR: $e");
       if (mounted) setState(() => _loading = false);
+    } finally {
+      _isLoadingFromBle = false;
     }
   }
 
@@ -92,9 +103,14 @@ class _EvseDetailsScreenState extends State<EvseDetailsScreen>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    _loadDeviceState();
+
+    /// run AFTER first frame (stable BLE timing)
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _loadDeviceState();
+    });
   }
 
+  // ================= KEYBOARD AUTO SCROLL =================
   @override
   void didChangeMetrics() {
     final bottomInset =
@@ -138,7 +154,8 @@ class _EvseDetailsScreenState extends State<EvseDetailsScreen>
       },
     );
 
-    await _loadDeviceState();
+    /// force single refresh after save
+    await _loadDeviceState(force: true);
 
     if (!mounted) return;
 
