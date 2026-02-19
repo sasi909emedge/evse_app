@@ -15,6 +15,7 @@ class BleScanScreen extends StatefulWidget {
 }
 
 class _BleScanScreenState extends State<BleScanScreen> {
+
   final List<DiscoveredDevice> _devices = [];
   StreamSubscription<DiscoveredDevice>? _scanSub;
   StreamSubscription<ConnectionStateUpdate>? _connSub;
@@ -22,6 +23,7 @@ class _BleScanScreenState extends State<BleScanScreen> {
   bool _isScanning = false;
   DiscoveredDevice? _selectedDevice;
 
+  // ================= CLEANUP =================
   @override
   void dispose() {
     _scanSub?.cancel();
@@ -29,6 +31,7 @@ class _BleScanScreenState extends State<BleScanScreen> {
     super.dispose();
   }
 
+  // ================= PERMISSIONS =================
   Future<bool> _ensureBlePermissions() async {
     final statuses = await [
       Permission.bluetoothScan,
@@ -39,7 +42,9 @@ class _BleScanScreenState extends State<BleScanScreen> {
     return statuses.values.every((s) => s.isGranted);
   }
 
+  // ================= SCAN =================
   Future<void> _startScan() async {
+
     final granted = await _ensureBlePermissions();
     if (!granted) return;
 
@@ -51,19 +56,31 @@ class _BleScanScreenState extends State<BleScanScreen> {
       _isScanning = true;
     });
 
-    _scanSub = BleService.instance.scanDevices().listen((device) {
-      final exists = _devices.any((d) => d.id == device.id);
-      if (!exists && mounted) {
-        setState(() => _devices.add(device));
-      }
-    }, onError: (_) {
-      if (mounted) setState(() => _isScanning = false);
-    }, onDone: () {
-      if (mounted) setState(() => _isScanning = false);
-    });
+    _scanSub = BleService.instance.scanDevices().listen(
+          (device) {
+
+        final exists = _devices.any((d) => d.id == device.id);
+
+        if (!exists && mounted) {
+          setState(() => _devices.add(device));
+        }
+      },
+      onError: (_) {
+        if (mounted) {
+          setState(() => _isScanning = false);
+        }
+      },
+      onDone: () {
+        if (mounted) {
+          setState(() => _isScanning = false);
+        }
+      },
+    );
   }
 
+  // ================= CONNECT =================
   Future<void> _connectSelectedDevice() async {
+
     if (_selectedDevice == null) return;
 
     final deviceId = _selectedDevice!.id;
@@ -73,7 +90,8 @@ class _BleScanScreenState extends State<BleScanScreen> {
     showDialog(
       context: context,
       barrierDismissible: false,
-      builder: (_) => const Center(child: CircularProgressIndicator()),
+      builder: (_) =>
+      const Center(child: CircularProgressIndicator()),
     );
 
     _connSub?.cancel();
@@ -84,16 +102,14 @@ class _BleScanScreenState extends State<BleScanScreen> {
 
       if (update.connectionState ==
           DeviceConnectionState.connected) {
-        try {
 
+        try {
           await Future.delayed(
               const Duration(milliseconds: 400));
 
           await BleService.instance.discoverServices(deviceId);
 
           if (!mounted) return;
-
-          await _connSub?.cancel();   // ⭐ CRITICAL FIX
 
           Navigator.pop(context);
 
@@ -104,92 +120,150 @@ class _BleScanScreenState extends State<BleScanScreen> {
                   EvseDetailsScreen(deviceId: deviceId),
             ),
           );
-
         } catch (e) {
-
           if (!mounted) return;
+
           Navigator.pop(context);
 
           ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Connection failed: $e')),
+            SnackBar(content: Text("Connection failed: $e")),
           );
         }
-      }
-
-      if (update.connectionState ==
-          DeviceConnectionState.disconnected) {
-
-        if (!mounted) return;
-
-        Navigator.pop(context);
-
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Device disconnected')),
-        );
       }
     });
   }
 
+  // ================= DEVICE TILE =================
   Widget _deviceTile(DiscoveredDevice d) {
+
     final selected = _selectedDevice?.id == d.id;
 
-    return Card(
-      margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(16),
-        side: selected
-            ? const BorderSide(color: AppColors.primary, width: 2)
-            : BorderSide.none,
-      ),
-      child: ListTile(
-        leading: Icon(
-          Icons.bluetooth,
-          color: selected ? AppColors.primary : Colors.blue,
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 200),
+      margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      child: Card(
+        child: ListTile(
+          contentPadding:
+          const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+
+          leading: Icon(
+            Icons.ev_station_rounded,
+            size: 28,
+            color: selected
+                ? AppColors.primary
+                : AppColors.textSecondary,
+          ),
+
+          title: Text(
+            d.name.isEmpty ? "EVSE Device" : d.name,
+            style: const TextStyle(
+              fontWeight: FontWeight.w600,
+              color: AppColors.textPrimary,
+            ),
+          ),
+
+          subtitle: Text(
+            d.id,
+            style: const TextStyle(
+              color: AppColors.textSecondary,
+              fontSize: 13,
+            ),
+          ),
+
+          trailing: selected
+              ? const Icon(Icons.check_circle,
+              color: AppColors.primary)
+              : null,
+
+          onTap: () =>
+              setState(() => _selectedDevice = d),
         ),
-        title: Text(
-          d.name.isEmpty ? 'EVSE Device' : d.name,
-          style: const TextStyle(fontWeight: FontWeight.bold),
-        ),
-        subtitle: Text(d.id),
-        onTap: () => setState(() => _selectedDevice = d),
       ),
     );
   }
 
+  // ================= UI =================
   @override
   Widget build(BuildContext context) {
+
     return Scaffold(
+
       appBar: AppBar(
-        backgroundColor: AppColors.primary,
-        title: const Text(
-          'EMEDGE\nMASTERCONTROLLER',
-          textAlign: TextAlign.center,
+        toolbarHeight: 72,
+        title: const Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              "EMEDGE",
+              style: TextStyle(
+                fontSize: 20,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+            Text(
+              "MASTERCONTROLLER",
+              style: TextStyle(
+                fontSize: 13,
+                letterSpacing: 1.2,
+                color: Colors.black54,
+              ),
+            ),
+          ],
         ),
-        centerTitle: true,
       ),
+
       body: Column(
         children: [
-          const SizedBox(height: 16),
-          ElevatedButton.icon(
-            icon: const Icon(Icons.search),
-            label: Text(_isScanning ? 'Scanning…' : 'Scan BLE Devices'),
-            onPressed: _isScanning ? null : _startScan,
-          ),
-          const Divider(),
-          Expanded(
-            child: _devices.isEmpty
-                ? const Center(child: Text('No EVSE devices found'))
-                : ListView.builder(
-              itemCount: _devices.length,
-              itemBuilder: (_, i) => _deviceTile(_devices[i]),
+
+          const SizedBox(height: 20),
+
+          // ===== SCAN BUTTON =====
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: SizedBox(
+              width: double.infinity,
+              child: ElevatedButton.icon(
+                icon: const Icon(Icons.search),
+                label: Text(
+                  _isScanning ? "Scanning..." : "Scan Devices",
+                ),
+                onPressed:
+                _isScanning ? null : _startScan,
+              ),
             ),
           ),
+
+          const SizedBox(height: 10),
+
+          // ===== DEVICE LIST =====
+          Expanded(
+            child: _devices.isEmpty
+                ? const Center(
+              child: Text(
+                "No EVSE devices found",
+                style: TextStyle(
+                  color: AppColors.textSecondary,
+                ),
+              ),
+            )
+                : ListView.builder(
+              itemCount: _devices.length,
+              itemBuilder: (_, i) =>
+                  _deviceTile(_devices[i]),
+            ),
+          ),
+
+          // ===== CONNECT BUTTON =====
           Padding(
             padding: const EdgeInsets.all(16),
-            child: ElevatedButton(
-              onPressed:
-              _selectedDevice == null ? null : _connectSelectedDevice,
-              child: const Text('Connect to Selected Device'),
+            child: SizedBox(
+              width: double.infinity,
+              child: ElevatedButton(
+                onPressed: _selectedDevice == null
+                    ? null
+                    : _connectSelectedDevice,
+                child: const Text("Connect"),
+              ),
             ),
           ),
         ],

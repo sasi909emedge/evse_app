@@ -11,8 +11,8 @@ class BleService {
   final FlutterReactiveBle _ble = FlutterReactiveBle();
 
   final Map<String, bool> _gattReady = {};
+  final Map<String, DateTime> _readyTime = {};
 
-  /// ✅ SAFE SERIAL QUEUE
   Future<void> _operation = Future.value();
 
   Future<T> _queue<T>(Future<T> Function() task) {
@@ -41,7 +41,6 @@ class BleService {
   // ================= CONNECT =================
   Stream<ConnectionStateUpdate> connectToDevice(String deviceId) {
     debugPrint("🔵 Connecting to $deviceId");
-
     return _ble.connectToDevice(
       id: deviceId,
       connectionTimeout: const Duration(seconds: 15),
@@ -51,52 +50,30 @@ class BleService {
   // ================= DISCOVER =================
   Future<void> discoverServices(String deviceId) async {
     debugPrint("🔍 Discovering services...");
-
     await _ble.discoverAllServices(deviceId);
+
+    final services = await _ble.getDiscoveredServices(deviceId);
+    for (final service in services) {
+      debugPrint("📡 SERVICE: ${service.id}");
+      for (final char in service.characteristics) {
+        debugPrint("   └─ CHAR: ${char.id}");
+      }
+    }
 
     try {
       await _ble.requestMtu(deviceId: deviceId, mtu: 247);
-      debugPrint("✅ MTU requested");
     } catch (_) {}
 
-    final services = await _ble.getDiscoveredServices(deviceId);
-
-    bool writeFound = false;
-    bool readFound = false;
-
-    for (final s in services) {
-      if (s.id == EVSEConfig.writeServiceUuid) {
-        for (final c in s.characteristics) {
-          if (c.id == EVSEConfig.writeCharUuid) writeFound = true;
-        }
-      }
-
-      if (s.id == EVSEConfig.readServiceUuid) {
-        for (final c in s.characteristics) {
-          if (c.id == EVSEConfig.readCharUuid) readFound = true;
-        }
-      }
-    }
-
-    if (!writeFound || !readFound) {
-      throw Exception("Required characteristics NOT FOUND");
-    }
-
     _gattReady[deviceId] = true;
-
-    debugPrint("✅ GATT READY — DEVICE SAFE");
+    _readyTime[deviceId] = DateTime.now();
+    debugPrint("✅ GATT READY");
   }
 
-  bool isGattReady(String deviceId) =>
-      _gattReady[deviceId] == true;
+  bool isGattReady(String deviceId) => _gattReady[deviceId] == true;
 
   // ================= WRITE =================
-  Future<void> writeJson(
-      String deviceId,
-      Map<String, dynamic> json,
-      ) {
+  Future<void> writeJson(String deviceId, Map<String, dynamic> json) {
     return _queue(() async {
-
       final characteristic = QualifiedCharacteristic(
         serviceId: EVSEConfig.writeServiceUuid,
         characteristicId: EVSEConfig.writeCharUuid,
@@ -116,7 +93,6 @@ class BleService {
   // ================= READ =================
   Future<Map<String, dynamic>> readJson(String deviceId) {
     return _queue(() async {
-
       final characteristic = QualifiedCharacteristic(
         deviceId: deviceId,
         serviceId: EVSEConfig.readServiceUuid,
@@ -124,19 +100,51 @@ class BleService {
       );
 
       debugPrint("📥 Performing BLE READ");
+      debugPrint("   serviceId:  ${EVSEConfig.readServiceUuid}");
+      debugPrint("   charUuid:   ${EVSEConfig.readCharUuid}");
 
-      final data = await _ble.readCharacteristic(characteristic);
+      final raw = await _ble.readCharacteristic(characteristic);
 
-      final jsonString = utf8.decode(data);
+      debugPrint("📦 RAW BYTES (${raw.length}): $raw");
 
-      debugPrint("✅ READ JSON: $jsonString");
+      // Remove NULL padding
+      final cleanedBytes = raw.where((b) => b != 0).toList();
+      final decoded = utf8.decode(cleanedBytes);
 
-      return jsonDecode(jsonString);
+      debugPrint("📝 DECODED STRING: $decoded");
+
+      final start = decoded.indexOf('{');
+      final end = decoded.lastIndexOf('}');
+
+      if (start == -1 || end == -1) {
+        debugPrint("❌ Invalid JSON frame: $decoded");
+        return {};
+      }
+
+      final jsonString = decoded.substring(start, end + 1);
+      debugPrint("✅ CLEAN JSON: $jsonString");
+      debugPrint("✅ JSON LENGTH: ${jsonString.length}");
+
+      try {
+        final parsed = jsonDecode(jsonString) as Map<String, dynamic>;
+        debugPrint("✅ PARSED KEYS: ${parsed.keys.toList()}");
+        return parsed;
+      } catch (e) {
+        debugPrint("❌ JSON PARSE ERROR: $e");
+        return {};
+      }
     });
   }
 
-  void disconnect(String deviceId) {
-    debugPrint("🔌 Clearing BLE state");
+  // ================= CLEAR GATT STATE =================
+  void clearGattState(String deviceId) {
     _gattReady.remove(deviceId);
+    _readyTime.remove(deviceId);
+  }
+
+  // ================= DISCONNECT =================
+  void disconnect(String deviceId) {
+    debugPrint("🔌 Clearing BLE state for $deviceId");
+    clearGattState(deviceId);
   }
 }
