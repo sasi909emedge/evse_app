@@ -47,5 +47,17 @@
 		<true/>
 		<key>UIStatusBarHidden</key>
 		<false/>
+		<key>UIStatusBarHidden</key>
+<false/>
+
+<!-- ── BLE PERMISSIONS ── -->
+<key>NSBluetoothAlwaysUsageDescription</key>
+<string>EMEDGE needs Bluetooth to connect and configure your EV charger.</string>
+
+<key>NSBluetoothPeripheralUsageDescription</key>
+<string>EMEDGE needs Bluetooth to connect and configure your EV charger.</string>
+
+<key>NSLocationWhenInUseUsageDescription</key>
+<string>EMEDGE needs location permission for Bluetooth scanning on iOS.</string>
 	</dict>
 </plist>

@@ -16,7 +16,7 @@ dependencies:
   flutter_reactive_ble: ^5.0.2
   shared_preferences: ^2.2.2
   permission_handler: ^11.3.1
-
+  win_ble: ^1.1.1
 dev_dependencies:
   flutter_test:
     sdk: flutter

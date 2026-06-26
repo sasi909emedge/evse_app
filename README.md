@@ -62,9 +62,6 @@ flutter_reactive_ble
 ↓
 ESP32 NimBLE Firmware
 
-yaml
-Copy code
-
 ---
 
 ## BLE Services
@@ -73,15 +70,10 @@ Copy code
 Service UUID: fb349b5f-8000-0080-0010-000000100000
 Characteristic UUID: fb349b5f-8000-0080-0010-000001100000
 
-shell
-Copy code
 
 ### Device Write Service
 Service UUID: fb349b5f-8000-0080-0010-000000200000
 Characteristic UUID: fb349b5f-8000-0080-0010-000001200000
-
-yaml
-Copy code
 
 ---
 
@@ -93,9 +85,6 @@ Current firmware response returns:
 
 {"temp":25.5}
 
-pgsql
-Copy code
-
 instead of expected EVSE configuration JSON:
 
 {
@@ -103,9 +92,6 @@ instead of expected EVSE configuration JSON:
 "chargerName": "...",
 ...
 }
-
-yaml
-Copy code
 
 Because configuration fields are not present in the payload, values are not displayed in the application UI.
 
@@ -128,9 +114,6 @@ lib/
 │ └── evse_details_screen.dart
 └── theme/
 └── app_colors.dart
-
-yaml
-Copy code
 
 ---
 

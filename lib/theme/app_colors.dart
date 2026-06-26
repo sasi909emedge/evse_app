@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 
 class AppColors {
-
   static const Color primary = Color(0xFF0A84FF);
 
   /// Tesla-style neutral background
