@@ -1,20 +1,166 @@
+import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../ble/ble_service_selector.dart';
 import '../theme/app_colors.dart';
+import '../main.dart';
+import '../ble/ble_protocol.dart';
+
+// ── Meter preset models ──────────────────────────────────────────
+class MeterPreset {
+  final String name;
+  final int voltage;
+  final int current;
+  final int power;
+  final int dataType;
+  final int wordOrder;
+  final int scaleExponent;
+  final int offsetAddress;
+
+  const MeterPreset({
+    required this.name,
+    required this.voltage,
+    required this.current,
+    required this.power,
+    required this.dataType,
+    required this.wordOrder,
+    required this.scaleExponent,
+    required this.offsetAddress,
+  });
+}
+
+// AC Meter presets
+const acMeterPresets = {
+  'EM4M': MeterPreset(
+    name: 'EM4M',
+    voltage: 1,
+    current: 2,
+    power: 3,
+    dataType: 5,
+    wordOrder: 2,
+    scaleExponent: 0,
+    offsetAddress: 0,
+  ),
+  'EMEDGE1234': MeterPreset(
+    name: 'EMEDGE1234',
+    voltage: 1,
+    current: 2,
+    power: 3,
+    dataType: 6,
+    wordOrder: 3,
+    scaleExponent: 0,
+    offsetAddress: 0,
+  ),
+};
+
+// DC Meter presets
+const dcMeterPresets = {
+  'EM2M': MeterPreset(
+    name: 'EM2M',
+    voltage: 1,
+    current: 2,
+    power: 3,
+    dataType: 0,
+    wordOrder: 0,
+    scaleExponent: 0,
+    offsetAddress: 0,
+  ),
+  'DCIVYEM619002': MeterPreset(
+    name: 'DCIVYEM619002',
+    voltage: 1,
+    current: 2,
+    power: 3,
+    dataType: 2,
+    wordOrder: 2,
+    scaleExponent: 0,
+    offsetAddress: 0,
+  ),
+};
+
+const Map<int, String> _meterDataTypeTokens = {
+  0: "UINT16",
+  1: "INT16",
+  2: "UINT32",
+  3: "INT32",
+  4: "UINT64",
+  5: "FLOAT32",
+  6: "BCD16",
+  7: "BCD32",
+};
+const Map<int, String> _meterWordOrderTokens = {
+  0: "AB",
+  1: "BA",
+  2: "ABCD",
+  3: "BADC",
+  4: "CDAB",
+  5: "DCBA",
+};
+
+int _parseHexAddress(dynamic v) {
+  if (v == null) return 0;
+  final s = v.toString();
+  return s.toLowerCase().startsWith('0x')
+      ? int.tryParse(s.substring(2), radix: 16) ?? 0
+      : int.tryParse(s) ?? 0;
+}
+
+int _reverseLookup(Map<int, String> map, dynamic val, int fallback) {
+  if (val == null) return fallback;
+  final str = val.toString();
+  for (final e in map.entries) {
+    if (e.value == str) return e.key;
+  }
+  return fallback;
+}
+
+class MeterData {
+  int param; // EnergyMeterParam: 1=Voltage,2=Current,3=Power,4=Energy
+  int moduleAddress;
+  int registerCount;
+  int dataType; // EnergyMeterDataType
+  int wordOrder; // EnergyMeterWordOrder
+  int scaleExponent;
+  int offsetAddress;
+
+  MeterData({
+    this.param = 1,
+    this.moduleAddress = 0,
+    this.registerCount = 1,
+    this.dataType = 0,
+    this.wordOrder = 0,
+    this.scaleExponent = 0,
+    this.offsetAddress = 0,
+  });
+
+  factory MeterData.fromMap(Map<String, dynamic> m) => MeterData(
+        moduleAddress: _parseHexAddress(m["Address"]),
+        registerCount: m["RegisterCount"] as int? ?? 1,
+        dataType: _reverseLookup(_meterDataTypeTokens, m["DataType"], 0),
+        wordOrder: _reverseLookup(_meterWordOrderTokens, m["WordOrder"], 0),
+        scaleExponent: m["ScaleExponent"] as int? ?? 0,
+      );
+}
 
 class EvseDetailsScreen extends StatefulWidget {
   final String deviceId;
-  const EvseDetailsScreen({super.key, required this.deviceId});
+  final String loggedInUser;
+  const EvseDetailsScreen({
+    super.key,
+    required this.deviceId,
+    this.loggedInUser = 'emedge',
+  });
 
   @override
   State<EvseDetailsScreen> createState() => _EvseDetailsScreenState();
 }
 
-class _EvseDetailsScreenState extends State<EvseDetailsScreen> {
-  final _scrollController = ScrollController();
-
-  // ── Controllers ─────────────────────────────────────────────────────
-  // Charger Info
+class _EvseDetailsScreenState extends State<EvseDetailsScreen>
+    with SingleTickerProviderStateMixin {
+  // ── TAB 1: Charger ───────────────────────────────────────────
+  bool defaultConfig = false;
+  int chargerType = 1;
+  int chargerModel = 1;
+  int boardModel = 1;
   final serialCtrl = TextEditingController();
   final chargerNameCtrl = TextEditingController();
   final vendorCtrl = TextEditingController();
@@ -23,61 +169,134 @@ class _EvseDetailsScreenState extends State<EvseDetailsScreen> {
   final commissionedDateCtrl = TextEditingController();
   final firmwareVersionCtrl = TextEditingController();
   final slaveFirmwareVersionCtrl = TextEditingController();
+  int chargingMode = 1;
+  bool smartCharging = false;
+  bool batteryBackup = false;
+  bool resumeSession = false;
+  bool restoreFromFault = false;
+  final restoreTimeCtrl = TextEditingController();
 
-  // WiFi
+  // ── TAB 2: Network ───────────────────────────────────────────
+  int networkMode = 0;
+  final webSocketURLCtrl = TextEditingController();
+  bool wifiEnable = false;
+  final wifiPriorityCtrl = TextEditingController();
   final wifiSSIDCtrl = TextEditingController();
   final wifiPassCtrl = TextEditingController();
-  final wifiPriorityCtrl = TextEditingController();
-
-  // GSM
-  final gsmAPNCtrl = TextEditingController();
+  bool ethernetEnable = false;
+  final ethernetPriorityCtrl = TextEditingController();
+  int ethernetConfig = 1;
+  final ipAddressCtrl = TextEditingController();
+  final gatewayCtrl = TextEditingController();
+  final dnsCtrl = TextEditingController();
+  final subnetCtrl = TextEditingController();
+  final macAddressCtrl = TextEditingController();
+  bool gsmEnable = false;
   final gsmPriorityCtrl = TextEditingController();
+  final gsmAPNCtrl = TextEditingController();
+  final simIMEICtrl = TextEditingController();
+  final simIMSICtrl = TextEditingController();
 
-  // Ethernet
-  final ethIPCtrl = TextEditingController();
-  final ethGWCtrl = TextEditingController();
-  final ethSubnetCtrl = TextEditingController();
-  final ethDNSCtrl = TextEditingController();
-  final ethPriorityCtrl = TextEditingController();
-
-  // OCPP
-  final ocppURLCtrl = TextEditingController();
-  final chargePointIDCtrl = TextEditingController();
-  final heartbeatCtrl = TextEditingController();
-
-  // Hardware
+  // ── TAB 3: Hardware ──────────────────────────────────────────
   final displaysCtrl = TextEditingController();
   final connectorsCtrl = TextEditingController();
   final powerModulesCtrl = TextEditingController();
+  final dcOverVoltCtrl = TextEditingController();
+  final acOverVoltCtrl = TextEditingController();
+  final dcUnderVoltCtrl = TextEditingController();
+  final acUnderVoltCtrl = TextEditingController();
+  final dcOverCurrCtrl = TextEditingController();
+  final acOverCurrCtrl = TextEditingController();
+  final overTempCtrl = TextEditingController();
 
-  // ── State Variables ──────────────────────────────────────────────────
-  int chargerType = 1;
-  int chargerModel = 1;
-  int boardModel = 1;
+  // ── TAB 4: Meters ────────────────────────────────────────────
+  // AC Meter
+  String acMeterType = 'EM4M';
+  int acVoltageAddr = 1;
+  int acCurrentAddr = 2;
+  int acPowerAddr = 3;
+  int acDataType = 5;
+  int acWordOrder = 2;
+  int acScaleExp = 0;
+  int acOffsetAddr = 40000;
 
-  String wifiEnable = "DISABLE";
-  String gsmEnable = "DISABLE";
-  String ethernetEnable = "DISABLE";
-  String ethernetDHCP = "DHCP";
-  String ocppEnable = "DISABLE";
-  String batteryBackup = "DISABLE";
+  // DC Meter 1
+  String dcMeter1Type = 'EM2M';
+  int dc1VoltageAddr = 1;
+  int dc1CurrentAddr = 2;
+  int dc1PowerAddr = 3;
+  int dc1DataType = 0;
+  int dc1WordOrder = 0;
+  int dc1ScaleExp = 0;
+  int dc1OffsetAddr = 40000;
 
-  // View-mode display strings (set from controllers on load/save)
-  Map<String, String> _display = {};
+  // DC Meter 2
+  String dcMeter2Type = 'EM2M';
+  int dc2VoltageAddr = 1;
+  int dc2CurrentAddr = 2;
+  int dc2PowerAddr = 3;
+  int dc2DataType = 0;
+  int dc2WordOrder = 0;
+  int dc2ScaleExp = 0;
+  int dc2OffsetAddr = 40000;
+  // ── Meter data model ─────────────────────────────────────────
+// AC Meter channels
+  late MeterData acV1N, acV2N, acV3N, acV12, acV23, acV31;
+  late MeterData acI1, acI2, acI3;
+  late MeterData acTotalKW, acAvgPF, acTotalKWh, acCumKWh, acResetCumKWh;
 
+// DC Meter 1
+  late MeterData dc1Voltage, dc1Current, dc1Power, dc1Energy;
+
+// DC Meter 2
+  late MeterData dc2Voltage, dc2Current, dc2Power, dc2Energy;
+
+// Power modules (8 max)
+  final List<bool> pmAvailable = List.filled(8, false);
+  final List<TextEditingController> pmAddressCtrl =
+      List.generate(8, (_) => TextEditingController());
+  final List<TextEditingController> pmMaxVoltCtrl =
+      List.generate(8, (_) => TextEditingController());
+  final List<TextEditingController> pmMaxCurrCtrl =
+      List.generate(8, (_) => TextEditingController());
+  final List<TextEditingController> pmMinVoltCtrl =
+      List.generate(8, (_) => TextEditingController());
+  final List<TextEditingController> pmMinCurrCtrl =
+      List.generate(8, (_) => TextEditingController());
+  final List<TextEditingController> pmMaxPowerCtrl =
+      List.generate(8, (_) => TextEditingController());
+  final List<TextEditingController> pmMinPowerCtrl =
+      List.generate(8, (_) => TextEditingController());
+  final List<TextEditingController> pmMaxTempCtrl =
+      List.generate(8, (_) => TextEditingController());
+  final List<TextEditingController> pmMinTempCtrl =
+      List.generate(8, (_) => TextEditingController());
+
+  // ── TAB 5: OTA ───────────────────────────────────────────────
+  bool otaUrlFromCMS = false;
+  final otaURLCtrl = TextEditingController();
+  bool diagnosticServer = false;
+  final diagnosticURLCtrl = TextEditingController();
+
+  // ── UI State ─────────────────────────────────────────────────
   bool _loading = true;
   bool _saving = false;
-  bool editMode = false;
+  bool _editMode = false;
   bool _reading = false;
+  bool _disconnecting = false;
+  bool _configDirty = false;
+  bool _meterDirty = false;
+  bool _powerModuleDirty = false;
+  Map<String, dynamic> _originalConfig = {};
+  Map<String, dynamic> _originalMeter = {};
+  Map<String, dynamic> _originalPowerModule = {};
+  late TabController _tabCtrl;
 
-  // Current tab
-  int _tabIndex = 0;
-
-  // ── Dropdown Maps ────────────────────────────────────────────────────
+  // ── Maps ─────────────────────────────────────────────────────
   final Map<int, String> chargerTypes = {
     1: "STANDALONE",
     2: "DISPENSER",
-    3: "STACK",
+    3: "STACK"
   };
   final Map<int, String> chargerModels = {
     1: "DC30S",
@@ -86,158 +305,639 @@ class _EvseDetailsScreenState extends State<EvseDetailsScreen> {
     4: "DC180S",
     5: "DC240S",
     6: "DC60D",
-    7: "DC120D",
+    7: "DC120D"
   };
-  final Map<int, String> boardModels = {
-    1: "DC1",
-    2: "DC2",
-    3: "DC3",
+  final Map<int, String> boardModels = {1: "DC1", 2: "DC2", 3: "DC3"};
+  final Map<int, String> chargingModes = {1: "DC", 2: "DC_AC"};
+  final Map<int, String> networkModes = {
+    0: "ONLINE",
+    1: "OFFLINE",
+    2: "ONLINE_OFFLINE",
+    3: "PLUGNPLAY"
   };
-  final List<String> enableOptions = ["ENABLE", "DISABLE"];
-  final List<String> dhcpOptions = ["DHCP", "STATIC"];
+  final Map<int, String> ethernetTypes = {0: "STATIC", 1: "DHCP"};
+  final Map<int, String> dataTypes = {
+    0: "UINT16",
+    1: "INT16",
+    2: "UINT32",
+    3: "INT32",
+    4: "UINT64",
+    5: "FLOAT32",
+    6: "BCD16",
+    7: "BCD32"
+  };
+  final Map<int, String> wordOrders = {
+    0: "AB",
+    1: "BA",
+    2: "ABCD",
+    3: "BADC",
+    4: "CDAB",
+    5: "DCBA"
+  };
+  final List<String> acMeterOptions = [
+    'Selec EM4M',
+    'Selec MFM384',
+    'Elmeasure M30',
+    'Elmeasure LG2XX0D',
+    'Rishabh 3430',
+    'Havells SDM630',
+    'User Defined',
+  ];
+  final List<String> dcMeterOptions = [
+    'Rishabh EM6000',
+    'Rishabh EM6001',
+    'Selec EM2M',
+    'Elmeasure EDC2150D',
+    'Elecnova PD195Z-CD31F',
+    'Elecnova PD195Z-CD32F',
+    'Pilot DCMSPM90',
+    'IVY DC EM619002',
+    'Yada DCM3366D-J2',
+    'User Defined',
+  ];
+  static const Map<String, String> _legacyAcMeterTypeMap = {
+    'EM4M': 'Selec EM4M',
+    'EMEDGE1234': 'User Defined',
+  };
+  static const Map<String, String> _legacyDcMeterTypeMap = {
+    'EM2M': 'Selec EM2M',
+    'DCIVYEM619002': 'IVY DC EM619002',
+  };
 
-  // =====================================================================
-  // APPLY DATA TO STATE
-  // Single source of truth used by both load and save
-  // =====================================================================
-  void _applyDataToState(Map<String, dynamic> d) {
-    // Charger info
+  String _normalizeMeterType(
+      String? raw, List<String> validOptions, Map<String, String> legacyMap) {
+    if (raw == null) return 'User Defined';
+    if (validOptions.contains(raw)) return raw;
+    if (legacyMap.containsKey(raw) && validOptions.contains(legacyMap[raw])) {
+      return legacyMap[raw]!;
+    }
+    return 'User Defined';
+  }
+
+  // ── Theme ─────────────────────────────────────────────────────
+  bool get _isDark => Theme.of(context).brightness == Brightness.dark;
+  Color get _bg => _isDark ? AppColors.backgroundDark : AppColors.background;
+  Color get _surface => _isDark ? AppColors.surfaceDark : AppColors.surface;
+  Color get _textPrimary =>
+      _isDark ? AppColors.textPrimaryDark : AppColors.textPrimary;
+  Color get _textSecondary =>
+      _isDark ? AppColors.textSecondaryDark : AppColors.textSecondary;
+  Color get _border => _isDark ? AppColors.borderDark : AppColors.border;
+
+  int get _connectorCount => int.tryParse(connectorsCtrl.text) ?? 1;
+
+  // ── NVS Key for this charger ──────────────────────────────────
+  String get _storageKey =>
+      'charger_config_${widget.deviceId.replaceAll(':', '')}';
+
+  // ── Apply Data ────────────────────────────────────────────────
+  void _applyData(Map<String, dynamic> d) {
+    defaultConfig = _bool(d["defaultConfig"]);
+    chargerType = _mapEnum(chargerTypes, d["chargerType"], 1);
+    chargerModel = _mapEnum(chargerModels, d["chargerModel"], 1);
+    boardModel = _mapEnum(boardModels, d["boardModel"], 1);
     serialCtrl.text = d["serialNumber"]?.toString() ?? "";
     chargerNameCtrl.text = d["chargerName"]?.toString() ?? "";
     vendorCtrl.text = d["chargePointVendor"]?.toString() ?? "";
     modelCtrl.text = d["chargePointModel"]?.toString() ?? "";
-    commissionedByCtrl.text = d["commissionedBy"]?.toString() ?? "";
-    commissionedDateCtrl.text = d["commissionedDate"]?.toString() ?? "";
+    commissionedByCtrl.text =
+        d["commissionedBy"]?.toString() ?? widget.loggedInUser;
+    commissionedDateCtrl.text = d["commissionedDate"]?.toString() ?? _today();
     firmwareVersionCtrl.text = d["firmwareVersion"]?.toString() ?? "";
-    slaveFirmwareVersionCtrl.text = d["slaveFirmwareVersion"]?.toString() ?? "";
-
-    chargerType = chargerTypes.entries
-        .firstWhere((e) => e.value == d["chargerType"],
-            orElse: () => const MapEntry(1, "STANDALONE"))
-        .key;
-    chargerModel = chargerModels.entries
-        .firstWhere((e) => e.value == d["chargerModel"],
-            orElse: () => const MapEntry(1, "DC30S"))
-        .key;
-    boardModel = boardModels.entries
-        .firstWhere((e) => e.value == d["boardModel"],
-            orElse: () => const MapEntry(1, "DC1"))
-        .key;
-
-    // WiFi
-    wifiEnable = d["wifiEnable"]?.toString() ?? "DISABLE";
+    slaveFirmwareVersionCtrl.text = d["slavefirmwareVersion"]?.toString() ?? "";
+    chargingMode = _mapEnum(chargingModes, d["chargingMode"], 1);
+    smartCharging = _bool(d["smartCharging"]);
+    batteryBackup = _bool(d["BatteryBackup"]);
+    resumeSession = _bool(d["ResumeSessionAfterPowerLoss"]);
+    restoreFromFault = _bool(d["restoreSessionFromFault"]);
+    restoreTimeCtrl.text = d["restoreSessionFromFaultTime"]?.toString() ?? "";
+    networkMode = _mapEnum(networkModes, d["networkMode"], 0);
+    webSocketURLCtrl.text = d["webSocketURL"]?.toString() ?? "";
+    wifiEnable = _bool(d["wifiEnable"]);
+    wifiPriorityCtrl.text = d["wifiPriority"]?.toString() ?? "";
     wifiSSIDCtrl.text = d["wifiSSID"]?.toString() ?? "";
     wifiPassCtrl.text = d["wifiPassword"]?.toString() ?? "";
-    wifiPriorityCtrl.text = d["wifiPriority"]?.toString() ?? "1";
-
-    // GSM
-    gsmEnable = d["gsmEnable"]?.toString() ?? "DISABLE";
+    ethernetEnable = _bool(d["ethernetEnable"]);
+    ethernetPriorityCtrl.text = d["ethernetPriority"]?.toString() ?? "";
+    ethernetConfig = _mapEnum(ethernetTypes, d["ethernetConfig"], 1);
+    ipAddressCtrl.text = d["ipAddress"]?.toString() ?? "";
+    gatewayCtrl.text = d["gatewayAddress"]?.toString() ?? "";
+    dnsCtrl.text = d["dnsAddress"]?.toString() ?? "";
+    subnetCtrl.text = d["subnetMask"]?.toString() ?? "";
+    macAddressCtrl.text = d["macAddress"]?.toString() ?? "";
+    gsmEnable = _bool(d["gsmEnable"]);
+    gsmPriorityCtrl.text = d["gsmPriority"]?.toString() ?? "";
     gsmAPNCtrl.text = d["gsmAPN"]?.toString() ?? "";
-    gsmPriorityCtrl.text = d["gsmPriority"]?.toString() ?? "2";
+    simIMEICtrl.text = d["simIMEINumber"]?.toString() ?? "";
+    simIMSICtrl.text = d["simIMSINumber"]?.toString() ?? "";
+    displaysCtrl.text = d["NumberOfDisplays"]?.toString() ?? "";
+    connectorsCtrl.text = d["NumberOfConnectors"]?.toString() ?? "";
+    powerModulesCtrl.text = d["NumberOfPowerModules"]?.toString() ?? "";
+    dcOverVoltCtrl.text = d["DCoverVoltageThreshold"]?.toString() ?? "";
+    acOverVoltCtrl.text = d["ACoverVoltageThreshold"]?.toString() ?? "";
+    dcUnderVoltCtrl.text = d["DCunderVoltageThreshold"]?.toString() ?? "";
+    acUnderVoltCtrl.text = d["ACunderVoltageThreshold"]?.toString() ?? "";
+    dcOverCurrCtrl.text = d["DCoverCurrentThreshold"]?.toString() ?? "";
+    acOverCurrCtrl.text = d["ACoverCurrentThreshold"]?.toString() ?? "";
+    overTempCtrl.text = d["overTemperatureThreshold"]?.toString() ?? "";
+    // Parse AC meter channels
+    final acM = d["acMeter"] as Map<String, dynamic>? ?? {};
+    acMeterType = _normalizeMeterType(
+        acM["meterType"]?.toString(), acMeterOptions, _legacyAcMeterTypeMap);
+    acV1N = MeterData.fromMap(acM["VoltageV1N"] as Map<String, dynamic>? ?? {});
+    acV2N = MeterData.fromMap(acM["VoltageV2N"] as Map<String, dynamic>? ?? {});
+    acV3N = MeterData.fromMap(acM["VoltageV3N"] as Map<String, dynamic>? ?? {});
+    acV12 = MeterData.fromMap(acM["VoltageV12"] as Map<String, dynamic>? ?? {});
+    acV23 = MeterData.fromMap(acM["VoltageV23"] as Map<String, dynamic>? ?? {});
+    acV31 = MeterData.fromMap(acM["VoltageV31"] as Map<String, dynamic>? ?? {});
+    acI1 = MeterData.fromMap(acM["CurrentI1"] as Map<String, dynamic>? ?? {});
+    acI2 = MeterData.fromMap(acM["CurrentI2"] as Map<String, dynamic>? ?? {});
+    acI3 = MeterData.fromMap(acM["CurrentI3"] as Map<String, dynamic>? ?? {});
+    acTotalKW =
+        MeterData.fromMap(acM["TotalKW"] as Map<String, dynamic>? ?? {});
+    acAvgPF =
+        MeterData.fromMap(acM["AveragePF"] as Map<String, dynamic>? ?? {});
+    acTotalKWh =
+        MeterData.fromMap(acM["TotalKWh"] as Map<String, dynamic>? ?? {});
+    acCumKWh =
+        MeterData.fromMap(acM["CumulativeKWh"] as Map<String, dynamic>? ?? {});
+    acResetCumKWh = MeterData.fromMap(
+        acM["ResetCumulativeKWh"] as Map<String, dynamic>? ?? {});
 
-    // Ethernet
-    ethernetEnable = d["ethernetEnable"]?.toString() ?? "DISABLE";
-    ethernetDHCP = d["ethernetDHCP"]?.toString() ?? "DHCP";
-    ethIPCtrl.text = d["ethernetIP"]?.toString() ?? "";
-    ethGWCtrl.text = d["ethernetGateway"]?.toString() ?? "";
-    ethSubnetCtrl.text = d["ethernetSubnet"]?.toString() ?? "";
-    ethDNSCtrl.text = d["ethernetDNS"]?.toString() ?? "";
-    ethPriorityCtrl.text = d["ethernetPriority"]?.toString() ?? "3";
+// Parse DC meter 1
+    final dc1M = d["dcMeter1"] as Map<String, dynamic>? ?? {};
+    dcMeter1Type = _normalizeMeterType(
+        dc1M["meterType"]?.toString(), dcMeterOptions, _legacyDcMeterTypeMap);
+    dc1Voltage =
+        MeterData.fromMap(dc1M["Voltage"] as Map<String, dynamic>? ?? {});
+    dc1Current =
+        MeterData.fromMap(dc1M["Current"] as Map<String, dynamic>? ?? {});
+    dc1Power = MeterData.fromMap(dc1M["Power"] as Map<String, dynamic>? ?? {});
+    dc1Energy =
+        MeterData.fromMap(dc1M["Energy"] as Map<String, dynamic>? ?? {});
 
-    // OCPP
-    ocppEnable = d["ocppEnable"]?.toString() ?? "DISABLE";
-    ocppURLCtrl.text = d["ocppURL"]?.toString() ?? "";
-    chargePointIDCtrl.text = d["chargePointID"]?.toString() ?? "";
-    heartbeatCtrl.text = d["heartbeatInterval"]?.toString() ?? "30";
+// Parse DC meter 2
+    final dc2M = d["dcMeter2"] as Map<String, dynamic>? ?? {};
+    dcMeter2Type = _normalizeMeterType(
+        dc2M["meterType"]?.toString(), dcMeterOptions, _legacyDcMeterTypeMap);
+    dc2Voltage =
+        MeterData.fromMap(dc2M["Voltage"] as Map<String, dynamic>? ?? {});
+    dc2Current =
+        MeterData.fromMap(dc2M["Current"] as Map<String, dynamic>? ?? {});
+    dc2Power = MeterData.fromMap(dc2M["Power"] as Map<String, dynamic>? ?? {});
+    dc2Energy =
+        MeterData.fromMap(dc2M["Energy"] as Map<String, dynamic>? ?? {});
 
-    // Hardware
-    displaysCtrl.text = d["numberOfDisplays"]?.toString() ?? "1";
-    connectorsCtrl.text = d["numberOfConnectors"]?.toString() ?? "1";
-    powerModulesCtrl.text = d["numberOfPowerModules"]?.toString() ?? "1";
-    batteryBackup = d["batteryBackup"]?.toString() ?? "DISABLE";
+// Parse power modules
+    final pmList = d["powerModules"] as List<dynamic>? ?? [];
+    for (int i = 0; i < pmList.length && i < 8; i++) {
+      final pm = pmList[i] as Map<String, dynamic>? ?? {};
+      pmAvailable[i] = _bool(pm["isAvailable"]);
+      pmAddressCtrl[i].text = pm["moduleAddress"]?.toString() ?? "";
+      pmMaxVoltCtrl[i].text = pm["MaxVoltage"]?.toString() ?? "";
+      pmMaxCurrCtrl[i].text = pm["MaxCurrent"]?.toString() ?? "";
+      pmMinVoltCtrl[i].text = pm["MinVoltage"]?.toString() ?? "";
+      pmMinCurrCtrl[i].text = pm["MinCurrent"]?.toString() ?? "";
+      pmMaxPowerCtrl[i].text = pm["MaxPower"]?.toString() ?? "";
+      pmMinPowerCtrl[i].text = pm["MinPower"]?.toString() ?? "";
+      pmMaxTempCtrl[i].text = pm["MaxTemperature"]?.toString() ?? "";
+      pmMinTempCtrl[i].text = pm["MinTemperature"]?.toString() ?? "";
+    }
+    acVoltageAddr = acM["voltageAddr"] as int? ?? 1;
+    acCurrentAddr = acM["currentAddr"] as int? ?? 2;
+    acPowerAddr = acM["powerAddr"] as int? ?? 3;
+    acDataType = acM["dataType"] as int? ?? 5;
+    acWordOrder = acM["wordOrder"] as int? ?? 2;
+    acScaleExp = acM["scaleExp"] as int? ?? 0;
+    acOffsetAddr = acM["OffsetAddress"] as int? ?? 40000;
+    dc1VoltageAddr = dc1M["voltageAddr"] as int? ?? 1;
+    dc1CurrentAddr = dc1M["currentAddr"] as int? ?? 2;
+    dc1PowerAddr = dc1M["powerAddr"] as int? ?? 3;
+    dc1DataType = dc1M["dataType"] as int? ?? 0;
+    dc1WordOrder = dc1M["wordOrder"] as int? ?? 0;
+    dc1ScaleExp = dc1M["scaleExp"] as int? ?? 0;
+    dc1OffsetAddr = dc1M["offsetAddr"] as int? ?? 40000;
+    dc2VoltageAddr = dc2M["voltageAddr"] as int? ?? 1;
+    dc2CurrentAddr = dc2M["currentAddr"] as int? ?? 2;
+    dc2PowerAddr = dc2M["powerAddr"] as int? ?? 3;
+    dc2DataType = dc2M["dataType"] as int? ?? 0;
+    dc2WordOrder = dc2M["wordOrder"] as int? ?? 0;
+    dc2ScaleExp = dc2M["scaleExp"] as int? ?? 0;
+    dc2OffsetAddr = dc2M["offsetAddr"] as int? ?? 40000;
+    otaUrlFromCMS = _bool(d["OtaUrlFromCMSEnable"]);
+    otaURLCtrl.text = d["OtaURLConfig"]?.toString() ?? "";
+    diagnosticServer = _bool(d["DiagnosticServer"]);
+    diagnosticURLCtrl.text = d["DiagnosticServerUrl"]?.toString() ?? "";
+    // Save original charger values
+    _originalConfig = Map<String, dynamic>.from(_currentConfigSnapshot());
+    _originalMeter = Map<String, dynamic>.from(_currentMeterSnapshot());
+    _originalPowerModule =
+        Map<String, dynamic>.from(_currentPowerModuleSnapshot());
 
-    // Rebuild display map for view mode
-    _display = {
-      "Serial Number": serialCtrl.text,
-      "Charger Name": chargerNameCtrl.text,
-      "Charge Point Vendor": vendorCtrl.text,
-      "Charge Point Model": modelCtrl.text,
-      "Commissioned By": commissionedByCtrl.text,
-      "Commissioned Date": commissionedDateCtrl.text,
-      "Firmware Version": firmwareVersionCtrl.text,
-      "Slave Firmware Version": slaveFirmwareVersionCtrl.text,
-      "WiFi": wifiEnable,
-      "SSID": wifiSSIDCtrl.text,
-      "WiFi Priority": wifiPriorityCtrl.text,
-      "GSM": gsmEnable,
-      "APN": gsmAPNCtrl.text,
-      "GSM Priority": gsmPriorityCtrl.text,
-      "Ethernet": ethernetEnable,
-      "DHCP/Static": ethernetDHCP,
-      "IP Address": ethIPCtrl.text,
-      "Gateway": ethGWCtrl.text,
-      "Subnet": ethSubnetCtrl.text,
-      "DNS": ethDNSCtrl.text,
-      "Ethernet Priority": ethPriorityCtrl.text,
-      "OCPP": ocppEnable,
-      "Server URL": ocppURLCtrl.text,
-      "Charge Point ID": chargePointIDCtrl.text,
-      "Heartbeat Interval": heartbeatCtrl.text,
-      "Displays": displaysCtrl.text,
-      "Connectors": connectorsCtrl.text,
-      "Power Modules": powerModulesCtrl.text,
-      "Battery Backup": batteryBackup,
+// Freshly loaded data is not dirty
+    _configDirty = false;
+    _meterDirty = false;
+    _powerModuleDirty = false;
+  }
+
+  bool _bool(dynamic v) {
+    if (v == null) return false;
+    if (v is bool) return v;
+    if (v is int) return v == 1;
+    if (v is String) return v.toLowerCase() == 'true' || v == '1';
+    return false;
+  }
+
+  void _updateDirtyFlags() {
+    _configDirty = !_mapsEqual(_currentConfigSnapshot(), _originalConfig);
+
+    _meterDirty = !_mapsEqual(_currentMeterSnapshot(), _originalMeter);
+
+    _powerModuleDirty =
+        !_mapsEqual(_currentPowerModuleSnapshot(), _originalPowerModule);
+  }
+
+  void _markConfigChanged() {
+    _updateDirtyFlags();
+    if (mounted) setState(() {});
+  }
+
+  void _markMeterChanged() {
+    _updateDirtyFlags();
+    if (mounted) setState(() {});
+  }
+
+  void _markPowerModuleChanged() {
+    _updateDirtyFlags();
+    if (mounted) setState(() {});
+  }
+
+  bool _mapsEqual(Map<String, dynamic> a, Map<String, dynamic> b) {
+    return jsonEncode(a) == jsonEncode(b);
+  }
+
+  void _restoreOriginalValues() {
+    final all = {
+      ..._originalConfig,
+      ..._originalMeter,
+      ..._originalPowerModule,
+    };
+
+    _applyData(all);
+
+    setState(() {
+      _configDirty = false;
+      _meterDirty = false;
+      _powerModuleDirty = false;
+      _editMode = false;
+    });
+  }
+
+  int _mapEnum(Map<int, String> map, dynamic val, int fallback) {
+    if (val == null) return fallback;
+    final str = val.toString();
+    for (final e in map.entries) {
+      if (e.value == str || e.key.toString() == str) return e.key;
+    }
+    return fallback;
+  }
+
+  Map<String, dynamic> _buildSaveMap() => {
+        "defaultConfig": defaultConfig,
+        "chargerType": chargerTypes[chargerType],
+        "chargerModel": chargerModels[chargerModel],
+        "boardModel": boardModels[boardModel],
+        "serialNumber": serialCtrl.text.trim(),
+        "chargerName": chargerNameCtrl.text.trim(),
+        "chargePointVendor": vendorCtrl.text.trim(),
+        "chargePointModel": modelCtrl.text.trim(),
+        "commissionedBy": widget.loggedInUser,
+        "commissionedDate": _today(),
+        "firmwareVersion": firmwareVersionCtrl.text.trim(),
+        "slavefirmwareVersion": slaveFirmwareVersionCtrl.text.trim(),
+        "chargingMode": chargingModes[chargingMode],
+        "smartCharging": smartCharging,
+        "BatteryBackup": batteryBackup,
+        "ResumeSessionAfterPowerLoss": resumeSession,
+        "restoreSessionFromFault": restoreFromFault,
+        "restoreSessionFromFaultTime":
+            int.tryParse(restoreTimeCtrl.text.trim()) ?? 0,
+        "networkMode": networkModes[networkMode],
+        "webSocketURL": webSocketURLCtrl.text.trim(),
+        "wifiEnable": wifiEnable,
+        "wifiPriority": int.tryParse(wifiPriorityCtrl.text.trim()) ?? 1,
+        "wifiSSID": wifiSSIDCtrl.text.trim(),
+        "wifiPassword": wifiPassCtrl.text.trim(),
+        "ethernetEnable": ethernetEnable,
+        "ethernetPriority": int.tryParse(ethernetPriorityCtrl.text.trim()) ?? 3,
+        "ethernetConfig": ethernetTypes[ethernetConfig],
+        "ipAddress": ipAddressCtrl.text.trim(),
+        "gatewayAddress": gatewayCtrl.text.trim(),
+        "dnsAddress": dnsCtrl.text.trim(),
+        "subnetMask": subnetCtrl.text.trim(),
+        "macAddress": macAddressCtrl.text.trim(),
+        "gsmEnable": gsmEnable,
+        "gsmPriority": int.tryParse(gsmPriorityCtrl.text.trim()) ?? 2,
+        "gsmAPN": gsmAPNCtrl.text.trim(),
+        "simIMEINumber": simIMEICtrl.text.trim(),
+        "simIMSINumber": simIMSICtrl.text.trim(),
+        "NumberOfDisplays": int.tryParse(displaysCtrl.text.trim()) ?? 1,
+        "NumberOfConnectors": int.tryParse(connectorsCtrl.text.trim()) ?? 1,
+        "NumberOfPowerModules": int.tryParse(powerModulesCtrl.text.trim()) ?? 1,
+        "DCoverVoltageThreshold":
+            double.tryParse(dcOverVoltCtrl.text.trim()) ?? 0.0,
+        "ACoverVoltageThreshold":
+            double.tryParse(acOverVoltCtrl.text.trim()) ?? 0.0,
+        "DCunderVoltageThreshold":
+            double.tryParse(dcUnderVoltCtrl.text.trim()) ?? 0.0,
+        "ACunderVoltageThreshold":
+            double.tryParse(acUnderVoltCtrl.text.trim()) ?? 0.0,
+        "DCoverCurrentThreshold":
+            double.tryParse(dcOverCurrCtrl.text.trim()) ?? 0.0,
+        "ACoverCurrentThreshold":
+            double.tryParse(acOverCurrCtrl.text.trim()) ?? 0.0,
+        "overTemperatureThreshold":
+            double.tryParse(overTempCtrl.text.trim()) ?? 0.0,
+        "acMeter": {
+          "meterType": acMeterType,
+          "voltageAddr": acVoltageAddr,
+          "currentAddr": acCurrentAddr,
+          "powerAddr": acPowerAddr,
+          "dataType": acDataType,
+          "wordOrder": acWordOrder,
+          "scaleExp": acScaleExp,
+          "offsetAddr": acOffsetAddr,
+        },
+        "dcMeter1": {
+          "meterType": dcMeter1Type,
+          "voltageAddr": dc1VoltageAddr,
+          "currentAddr": dc1CurrentAddr,
+          "powerAddr": dc1PowerAddr,
+          "dataType": dc1DataType,
+          "wordOrder": dc1WordOrder,
+          "scaleExp": dc1ScaleExp,
+          "offsetAddr": dc1OffsetAddr,
+        },
+        "dcMeter2": {
+          "meterType": dcMeter2Type,
+          "voltageAddr": dc2VoltageAddr,
+          "currentAddr": dc2CurrentAddr,
+          "powerAddr": dc2PowerAddr,
+          "dataType": dc2DataType,
+          "wordOrder": dc2WordOrder,
+          "scaleExp": dc2ScaleExp,
+          "offsetAddr": dc2OffsetAddr,
+        },
+        "OtaUrlFromCMSEnable": otaUrlFromCMS,
+        "OtaURLConfig": otaURLCtrl.text.trim(),
+        "DiagnosticServer": diagnosticServer,
+        "DiagnosticServerUrl": diagnosticURLCtrl.text.trim(),
+      };
+  Map<String, dynamic> _buildChargerMap() => {
+        "defaultConfig": defaultConfig,
+        "chargerType": chargerTypes[chargerType],
+        "chargerModel": chargerModels[chargerModel],
+        "boardModel": boardModels[boardModel],
+        "serialNumber": serialCtrl.text.trim(),
+        "chargerName": chargerNameCtrl.text.trim(),
+        "chargePointVendor": vendorCtrl.text.trim(),
+        "chargePointModel": modelCtrl.text.trim(),
+        "commissionedBy": widget.loggedInUser,
+        "commissionedDate": _today(),
+        "chargingMode": chargingModes[chargingMode],
+        "smartCharging": smartCharging,
+        "BatteryBackup": batteryBackup,
+        "ResumeSessionAfterPowerLoss": resumeSession,
+        "restoreSessionFromFault": restoreFromFault,
+        "restoreSessionFromFaultTime":
+            int.tryParse(restoreTimeCtrl.text.trim()) ?? 0,
+      };
+
+  Map<String, dynamic> _buildNetworkMap() => {
+        "networkMode": networkModes[networkMode],
+        "webSocketURL": webSocketURLCtrl.text.trim(),
+        "wifiEnable": wifiEnable,
+        "wifiPriority": int.tryParse(wifiPriorityCtrl.text.trim()) ?? 1,
+        "wifiSSID": wifiSSIDCtrl.text.trim(),
+        "wifiPassword": wifiPassCtrl.text.trim(),
+        "ethernetEnable": ethernetEnable,
+        "ethernetPriority": int.tryParse(ethernetPriorityCtrl.text.trim()) ?? 3,
+        "ethernetConfig": ethernetTypes[ethernetConfig],
+        "ipAddress": ipAddressCtrl.text.trim(),
+        "gatewayAddress": gatewayCtrl.text.trim(),
+        "dnsAddress": dnsCtrl.text.trim(),
+        "subnetMask": subnetCtrl.text.trim(),
+        "macAddress": macAddressCtrl.text.trim(),
+        "gsmEnable": gsmEnable,
+        "gsmPriority": int.tryParse(gsmPriorityCtrl.text.trim()) ?? 2,
+        "gsmAPN": gsmAPNCtrl.text.trim(),
+        "simIMEINumber": simIMEICtrl.text.trim(),
+        "simIMSINumber": simIMSICtrl.text.trim(),
+      };
+
+  Map<String, dynamic> _buildHardwareMap() => {
+        "NumberOfDisplays": int.tryParse(displaysCtrl.text.trim()) ?? 1,
+        "NumberOfConnectors": int.tryParse(connectorsCtrl.text.trim()) ?? 1,
+        "NumberOfPowerModules": int.tryParse(powerModulesCtrl.text.trim()) ?? 1,
+        "DCoverVoltageThreshold":
+            double.tryParse(dcOverVoltCtrl.text.trim()) ?? 0.0,
+        "ACoverVoltageThreshold":
+            double.tryParse(acOverVoltCtrl.text.trim()) ?? 0.0,
+        "DCunderVoltageThreshold":
+            double.tryParse(dcUnderVoltCtrl.text.trim()) ?? 0.0,
+        "ACunderVoltageThreshold":
+            double.tryParse(acUnderVoltCtrl.text.trim()) ?? 0.0,
+        "DCoverCurrentThreshold":
+            double.tryParse(dcOverCurrCtrl.text.trim()) ?? 0.0,
+        "ACoverCurrentThreshold":
+            double.tryParse(acOverCurrCtrl.text.trim()) ?? 0.0,
+        "overTemperatureThreshold":
+            double.tryParse(overTempCtrl.text.trim()) ?? 0.0,
+      };
+
+  Map<String, dynamic> _buildPowerModuleMap() => {
+        "powerModules": List.generate(
+            8,
+            (i) => {
+                  "index": i + 1,
+                  "isAvailable": pmAvailable[i],
+                  "moduleAddress":
+                      int.tryParse(pmAddressCtrl[i].text.trim()) ?? 0,
+                  "MaxVoltage":
+                      double.tryParse(pmMaxVoltCtrl[i].text.trim()) ?? 0.0,
+                  "MaxCurrent":
+                      double.tryParse(pmMaxCurrCtrl[i].text.trim()) ?? 0.0,
+                  "MinVoltage":
+                      double.tryParse(pmMinVoltCtrl[i].text.trim()) ?? 0.0,
+                  "MinCurrent":
+                      double.tryParse(pmMinCurrCtrl[i].text.trim()) ?? 0.0,
+                  "MaxPower":
+                      double.tryParse(pmMaxPowerCtrl[i].text.trim()) ?? 0.0,
+                  "MinPower":
+                      double.tryParse(pmMinPowerCtrl[i].text.trim()) ?? 0.0,
+                  "MaxTemperature":
+                      double.tryParse(pmMaxTempCtrl[i].text.trim()) ?? 0.0,
+                  "MinTemperature":
+                      double.tryParse(pmMinTempCtrl[i].text.trim()) ?? 0.0,
+                }),
+      };
+
+  Map<String, dynamic> _buildMeterMap() => {
+        "acMeter": {
+          "meterType": acMeterType,
+          "OffsetAddress": acOffsetAddr,
+          "VoltageV1N": _meterDataMap("VoltageV1N", acV1N),
+          "VoltageV2N": _meterDataMap("VoltageV2N", acV2N),
+          "VoltageV3N": _meterDataMap("VoltageV3N", acV3N),
+          "VoltageV12": _meterDataMap("VoltageV12", acV12),
+          "VoltageV23": _meterDataMap("VoltageV23", acV23),
+          "VoltageV31": _meterDataMap("VoltageV31", acV31),
+          "CurrentI1": _meterDataMap("CurrentI1", acI1),
+          "CurrentI2": _meterDataMap("CurrentI2", acI2),
+          "CurrentI3": _meterDataMap("CurrentI3", acI3),
+          "TotalKW": _meterDataMap("TotalKW", acTotalKW),
+          "AveragePF": _meterDataMap("AveragePF", acAvgPF),
+          "TotalKWh": _meterDataMap("TotalKWh", acTotalKWh),
+          "CumulativeKWh": _meterDataMap("CumulativeKWh", acCumKWh),
+          "ResetCumulativeKWh":
+              _meterDataMap("ResetCumulativeKWh", acResetCumKWh),
+        },
+        "dcMeter1": {
+          "meterType": dcMeter1Type,
+          "assignedGun": 1,
+          "OffsetAddress": dc1OffsetAddr,
+          "Voltage": _meterDataMap("Voltage", dc1Voltage),
+          "Current": _meterDataMap("Current", dc1Current),
+          "Power": _meterDataMap("Power", dc1Power),
+          "Energy": _meterDataMap("Energy", dc1Energy),
+        },
+        "dcMeter2": {
+          "meterType": dcMeter2Type,
+          "assignedGun": 2,
+          "OffsetAddress": dc2OffsetAddr,
+          "Voltage": _meterDataMap("Voltage", dc2Voltage),
+          "Current": _meterDataMap("Current", dc2Current),
+          "Power": _meterDataMap("Power", dc2Power),
+          "Energy": _meterDataMap("Energy", dc2Energy),
+        },
+      };
+
+  Map<String, dynamic> _meterDataMap(String paramName, MeterData m) => {
+        "ParamName": paramName,
+        "Address":
+            "0x${m.moduleAddress.toRadixString(16).padLeft(4, '0').toUpperCase()}",
+        "RegisterCount": m.registerCount,
+        "DataType": dataTypes[m.dataType] ?? "UINT16",
+        "WordOrder": wordOrders[m.wordOrder] ?? "AB",
+        "ScaleExponent": m.scaleExponent,
+      };
+
+  Map<String, dynamic> _buildOtaMap() => {
+        "OtaUrlFromCMSEnable": otaUrlFromCMS,
+        "OtaURLConfig": otaURLCtrl.text.trim(),
+        "DiagnosticServer": diagnosticServer,
+        "DiagnosticServerUrl": diagnosticURLCtrl.text.trim(),
+      };
+
+  Map<String, dynamic> _currentConfigSnapshot() {
+    return {
+      ..._buildChargerMap(),
+      ..._buildNetworkMap(),
+      ..._buildHardwareMap(),
+      ..._buildOtaMap(),
     };
   }
 
-  // =====================================================================
-  // LOAD
-  // =====================================================================
-  Future<void> _loadDeviceState() async {
+  Map<String, dynamic> _currentMeterSnapshot() {
+    return _buildMeterMap();
+  }
+
+  Map<String, dynamic> _currentPowerModuleSnapshot() {
+    return _buildPowerModuleMap();
+  }
+
+  String _today() {
+    final n = DateTime.now();
+    return "${n.day.toString().padLeft(2, '0')}-${n.month.toString().padLeft(2, '0')}-${n.year}";
+  }
+
+  // ── Local Storage ─────────────────────────────────────────────
+  Future<void> _saveLocally(Map<String, dynamic> data) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(_storageKey, jsonEncode(data));
+      debugPrint("💾 Config saved locally for ${widget.deviceId}");
+    } catch (e) {
+      debugPrint("❌ Local save: $e");
+    }
+  }
+
+  Future<Map<String, dynamic>> _loadLocally() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final str = prefs.getString(_storageKey);
+      if (str != null && str.isNotEmpty) {
+        return jsonDecode(str) as Map<String, dynamic>;
+      }
+    } catch (e) {
+      debugPrint("❌ Local load: $e");
+    }
+    return {};
+  }
+
+  // ── Reset — load locally saved config for THIS charger ────────
+  Future<void> _resetToSaved() async {
+    final ok = await _confirm(
+      "Reset Configuration",
+      "Load the last saved configuration for this charger (${widget.deviceId})?",
+    );
+    if (!ok) return;
+    final local = await _loadLocally();
+    if (local.isEmpty) {
+      _snack("No saved config found for this charger", ok: false);
+      return;
+    }
+    setState(() => _applyData(local));
+    _snack("Restored saved configuration — press Save to write to charger");
+  }
+
+  // ── Load from charger ─────────────────────────────────────────
+  Future<void> _load() async {
     if (_reading) return;
     _reading = true;
-
     try {
-      int waited = 0;
-      while (
-          !BleService.instance.isGattReady(widget.deviceId) && waited < 5000) {
+      int w = 0;
+      while (!BleService.instance.isGattReady(widget.deviceId) && w < 5000) {
         await Future.delayed(const Duration(milliseconds: 200));
-        waited += 200;
+        w += 200;
       }
-
       if (!BleService.instance.isGattReady(widget.deviceId)) {
         if (mounted) setState(() => _loading = false);
         return;
       }
-
       await Future.delayed(const Duration(milliseconds: 400));
-
       Map<String, dynamic> data = {};
-
       try {
         data = await BleService.instance.readJson(widget.deviceId);
       } catch (e) {
-        debugPrint("❌ Read error: $e");
+        debugPrint("❌ Read: $e");
       }
-
       if (data.isEmpty) {
         await Future.delayed(const Duration(milliseconds: 600));
         try {
           data = await BleService.instance.readJson(widget.deviceId);
         } catch (e) {
-          debugPrint("❌ Retry failed: $e");
+          debugPrint("❌ Retry: $e");
         }
       }
-
       if (!mounted) return;
-
       if (data.isNotEmpty) {
-        setState(() => _applyDataToState(data));
+        setState(() => _applyData(data));
+        await _saveLocally(data); // Save to local storage
       }
-
       setState(() => _loading = false);
     } catch (e) {
-      debugPrint("❌ LOAD ERROR: $e");
+      debugPrint("❌ Load: $e");
       if (mounted) setState(() => _loading = false);
     } finally {
       _reading = false;
@@ -247,19 +947,43 @@ class _EvseDetailsScreenState extends State<EvseDetailsScreen> {
   @override
   void initState() {
     super.initState();
+    _tabCtrl = TabController(length: 7, vsync: this);
+    // Initialize all meter data
+    acV1N = MeterData(param: 1);
+    acV2N = MeterData(param: 1);
+    acV3N = MeterData(param: 1);
+    acV12 = MeterData(param: 1);
+    acV23 = MeterData(param: 1);
+    acV31 = MeterData(param: 1);
+    acI1 = MeterData(param: 2);
+    acI2 = MeterData(param: 2);
+    acI3 = MeterData(param: 2);
+    acTotalKW = MeterData(param: 3);
+    acAvgPF = MeterData(param: 3);
+    acTotalKWh = MeterData(param: 4);
+    acCumKWh = MeterData(param: 4);
+    acResetCumKWh = MeterData(param: 4);
+    dc1Voltage = MeterData(param: 1);
+    dc1Current = MeterData(param: 2);
+    dc1Power = MeterData(param: 3);
+    dc1Energy = MeterData(param: 4);
+    dc2Voltage = MeterData(param: 1);
+    dc2Current = MeterData(param: 2);
+    dc2Power = MeterData(param: 3);
+    dc2Energy = MeterData(param: 4);
+    commissionedByCtrl.text = widget.loggedInUser;
+    commissionedDateCtrl.text = _today();
     WidgetsBinding.instance.addPostFrameCallback((_) async {
-      // discoverServices already called in ble_scan_screen before navigation
-      // Only discover again if GATT not ready (e.g. direct navigation)
       if (!BleService.instance.isGattReady(widget.deviceId)) {
         await BleService.instance.discoverServices(widget.deviceId);
       }
-      await _loadDeviceState();
+      await _load();
     });
   }
 
   @override
   void dispose() {
-    _scrollController.dispose();
+    _tabCtrl.dispose();
     for (final c in [
       serialCtrl,
       chargerNameCtrl,
@@ -269,496 +993,1634 @@ class _EvseDetailsScreenState extends State<EvseDetailsScreen> {
       commissionedDateCtrl,
       firmwareVersionCtrl,
       slaveFirmwareVersionCtrl,
+      restoreTimeCtrl,
+      webSocketURLCtrl,
+      wifiPriorityCtrl,
       wifiSSIDCtrl,
       wifiPassCtrl,
-      wifiPriorityCtrl,
-      gsmAPNCtrl,
+      ethernetPriorityCtrl,
+      ipAddressCtrl,
+      gatewayCtrl,
+      dnsCtrl,
+      subnetCtrl,
+      macAddressCtrl,
       gsmPriorityCtrl,
-      ethIPCtrl,
-      ethGWCtrl,
-      ethSubnetCtrl,
-      ethDNSCtrl,
-      ethPriorityCtrl,
-      ocppURLCtrl,
-      chargePointIDCtrl,
-      heartbeatCtrl,
+      gsmAPNCtrl,
+      simIMEICtrl,
+      simIMSICtrl,
       displaysCtrl,
       connectorsCtrl,
       powerModulesCtrl,
+      dcOverVoltCtrl,
+      acOverVoltCtrl,
+      dcUnderVoltCtrl,
+      acUnderVoltCtrl,
+      dcOverCurrCtrl,
+      acOverCurrCtrl,
+      overTempCtrl,
+      otaURLCtrl,
+      diagnosticURLCtrl,
     ]) {
       c.dispose();
+    }
+    // Dispose PM controllers
+    for (int i = 0; i < 8; i++) {
+      pmAddressCtrl[i].dispose();
+      pmMaxVoltCtrl[i].dispose();
+      pmMaxCurrCtrl[i].dispose();
+      pmMinVoltCtrl[i].dispose();
+      pmMinCurrCtrl[i].dispose();
+      pmMaxPowerCtrl[i].dispose();
+      pmMinPowerCtrl[i].dispose();
+      pmMaxTempCtrl[i].dispose();
+      pmMinTempCtrl[i].dispose();
     }
     BleService.instance.disconnect(widget.deviceId);
     super.dispose();
   }
 
-  // =====================================================================
-  // SAVE
-  // =====================================================================
+  // ── Save ──────────────────────────────────────────────────────
   Future<void> _save() async {
+    FocusScope.of(context).unfocus();
+    await Future.delayed(const Duration(milliseconds: 150));
+
+    _updateDirtyFlags();
+
+    if (!_configDirty && !_meterDirty && !_powerModuleDirty) {
+      if (mounted) {
+        _snack("No changes to save.", ok: true);
+      }
+      return;
+    }
+
     setState(() => _saving = true);
 
-    final updatedData = <String, dynamic>{
-      "chargerType": chargerTypes[chargerType],
-      "chargerModel": chargerModels[chargerModel],
-      "boardModel": boardModels[boardModel],
-      "serialNumber": serialCtrl.text.trim(),
-      "chargerName": chargerNameCtrl.text.trim(),
-      "chargePointVendor": vendorCtrl.text.trim(),
-      "chargePointModel": modelCtrl.text.trim(),
-      "commissionedBy": commissionedByCtrl.text.trim(),
-      "commissionedDate": commissionedDateCtrl.text.trim(),
-      "firmwareVersion": firmwareVersionCtrl.text.trim(),
-      "slaveFirmwareVersion": slaveFirmwareVersionCtrl.text.trim(),
-      // WiFi
-      "wifiEnable": wifiEnable,
-      "wifiSSID": wifiSSIDCtrl.text.trim(),
-      "wifiPassword": wifiPassCtrl.text.trim(),
-      "wifiPriority": wifiPriorityCtrl.text.trim(),
-      // GSM
-      "gsmEnable": gsmEnable,
-      "gsmAPN": gsmAPNCtrl.text.trim(),
-      "gsmPriority": gsmPriorityCtrl.text.trim(),
-      // Ethernet
-      "ethernetEnable": ethernetEnable,
-      "ethernetDHCP": ethernetDHCP,
-      "ethernetIP": ethIPCtrl.text.trim(),
-      "ethernetGateway": ethGWCtrl.text.trim(),
-      "ethernetSubnet": ethSubnetCtrl.text.trim(),
-      "ethernetDNS": ethDNSCtrl.text.trim(),
-      "ethernetPriority": ethPriorityCtrl.text.trim(),
-      // OCPP
-      "ocppEnable": ocppEnable,
-      "ocppURL": ocppURLCtrl.text.trim(),
-      "chargePointID": chargePointIDCtrl.text.trim(),
-      "heartbeatInterval": heartbeatCtrl.text.trim(),
-      // Hardware
-      "numberOfDisplays": displaysCtrl.text.trim(),
-      "numberOfConnectors": connectorsCtrl.text.trim(),
-      "numberOfPowerModules": powerModulesCtrl.text.trim(),
-      "batteryBackup": batteryBackup,
-    };
-
     try {
-      await BleService.instance.writeJson(widget.deviceId, updatedData);
+      if (_configDirty) {
+        final chargerData = _buildChargerMap();
+        final networkData = _buildNetworkMap();
+        final hardwareData = _buildHardwareMap();
+        final otaData = _buildOtaMap();
 
-      // Update UI directly from what we sent — no re-read needed
-      if (mounted) {
-        setState(() => _applyDataToState(updatedData));
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text("✅ Configuration Saved Successfully"),
-            backgroundColor: Colors.green,
-            duration: Duration(seconds: 2),
-          ),
+        final configJson = {
+          ...chargerData,
+          ...networkData,
+          ...hardwareData,
+          ...otaData,
+        };
+
+        await BleService.instance.writeTabJson(
+          widget.deviceId,
+          configJson,
+          Selection.updateConfig,
         );
+        await Future.delayed(const Duration(milliseconds: 300));
+      }
+
+      // ----------------------------------------------------
+      // METERS
+      // ----------------------------------------------------
+
+      if (_meterDirty) {
+        await BleService.instance.writeTabJson(
+          widget.deviceId,
+          _buildMeterMap(),
+          Selection.updateMeterConfig,
+        );
+        await Future.delayed(const Duration(milliseconds: 300));
+      }
+
+      // ----------------------------------------------------
+      // POWER MODULES
+      // ----------------------------------------------------
+
+      if (_powerModuleDirty) {
+        await BleService.instance.writeTabJson(
+          widget.deviceId,
+          _buildPowerModuleMap(),
+          Selection.updatePowerModule,
+        );
+        await Future.delayed(const Duration(milliseconds: 300));
+      }
+
+      //-----------------------------------------------------
+      // LOCAL SAVE
+      //-----------------------------------------------------
+
+      final allData = {
+        ..._currentConfigSnapshot(),
+        ..._currentMeterSnapshot(),
+        ..._currentPowerModuleSnapshot(),
+      };
+
+      await _saveLocally(allData);
+
+      //-----------------------------------------------------
+      // UPDATE SNAPSHOT
+      //-----------------------------------------------------
+
+      _originalConfig = Map<String, dynamic>.from(_currentConfigSnapshot());
+
+      _originalMeter = Map<String, dynamic>.from(_currentMeterSnapshot());
+
+      _originalPowerModule =
+          Map<String, dynamic>.from(_currentPowerModuleSnapshot());
+
+      _configDirty = false;
+      _meterDirty = false;
+      _powerModuleDirty = false;
+
+      if (mounted) {
+        _snack("Configuration Saved", ok: true);
       }
     } catch (e) {
-      debugPrint("❌ SAVE ERROR: $e");
+      debugPrint(e.toString());
+
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text("❌ Save failed: $e"),
-            backgroundColor: Colors.red,
-          ),
-        );
+        _snack("Save Failed", ok: false);
       }
     } finally {
-      if (mounted) setState(() => _saving = false);
+      if (mounted) {
+        setState(() => _saving = false);
+      }
     }
   }
 
-  // =====================================================================
-  // FACTORY RESET
-  // =====================================================================
+  void _snack(String msg, {bool ok = true}) {
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Row(children: [
+        Icon(ok ? Icons.check_circle_rounded : Icons.error_rounded,
+            color: Colors.white, size: 18),
+        const SizedBox(width: 8),
+        Expanded(child: Text(msg)),
+      ]),
+      backgroundColor: ok ? AppColors.success : AppColors.error,
+      duration: const Duration(seconds: 3),
+    ));
+  }
+
+  Future<void> _disconnect() async {
+    final hasUnsaved = _configDirty || _meterDirty || _powerModuleDirty;
+    final ok = await _confirm(
+        "Disconnect",
+        hasUnsaved
+            ? "You have unsaved changes. Disconnect anyway and return to scan screen?"
+            : "Disconnect from charger and return to scan screen?");
+    if (!ok) return;
+    setState(() => _disconnecting = true);
+    await Future.delayed(const Duration(milliseconds: 300));
+    BleService.instance.disconnect(widget.deviceId);
+    if (mounted) Navigator.pop(context);
+  }
+
+  Future<bool?> _showSaveDiscardDialog() async {
+    // Returns true = Save, false = Discard, null = Cancel (stay in edit mode)
+    return showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        backgroundColor: _surface,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: Text("Unsaved Changes",
+            style: TextStyle(
+                fontSize: 16,
+                fontWeight: FontWeight.w600,
+                color: _textPrimary)),
+        content: Text("You have unsaved changes. Save before leaving?",
+            style: TextStyle(fontSize: 13, color: _textSecondary)),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(context, null),
+              child: const Text("Cancel")),
+          TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: Text("Discard", style: TextStyle(color: AppColors.error))),
+          TextButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: Text("Save", style: TextStyle(color: AppColors.primary))),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _returnToInfoMode() async {
+    FocusScope.of(context).unfocus();
+    _updateDirtyFlags();
+    final hasChanges = _configDirty || _meterDirty || _powerModuleDirty;
+
+    if (!hasChanges) {
+      if (mounted) setState(() => _editMode = false);
+      return;
+    }
+
+    final wantsSave = await _showSaveDiscardDialog();
+    if (wantsSave == null) return; // Cancel — stay in edit mode
+
+    if (wantsSave) {
+      await _save(); // now stays in edit mode internally (see fix below)
+      if (mounted) setState(() => _editMode = false);
+    } else {
+      _restoreOriginalValues(); // already sets _editMode = false
+    }
+  }
+
   Future<void> _factoryReset() async {
-    final confirm = await showDialog<bool>(
-      context: context,
-      builder: (_) => AlertDialog(
-        title: const Text("Factory Reset"),
-        content: const Text(
-            "This will erase all saved configuration and restart the charger.\n\nAre you sure?"),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.pop(context, false),
-              child: const Text("Cancel")),
-          TextButton(
-              onPressed: () => Navigator.pop(context, true),
-              child: const Text("Reset", style: TextStyle(color: Colors.red))),
-        ],
-      ),
-    );
-
-    if (confirm != true) return;
-
+    final ok = await _confirm("Factory Reset",
+        "This erases all saved config and restarts the charger.",
+        destructive: true);
+    if (!ok) return;
     try {
-      await BleService.instance.sendCommand(widget.deviceId, "#FACTORY_RESET#");
+      await BleService.instance.sendCommand(widget.deviceId, "FACTORY_RESET");
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-              content: Text("Factory reset sent. Charger restarting...")),
-        );
+        _snack("Factory reset sent");
         Navigator.pop(context);
       }
     } catch (e) {
-      debugPrint("❌ Factory reset error: $e");
+      debugPrint("❌ $e");
     }
   }
 
-  // =====================================================================
-  // RESTART
-  // =====================================================================
-  Future<void> _restartCharger() async {
-    final confirm = await showDialog<bool>(
-      context: context,
-      builder: (_) => AlertDialog(
-        title: const Text("Restart Charger"),
-        content: const Text("Restart the charger now?"),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.pop(context, false),
-              child: const Text("Cancel")),
-          TextButton(
-              onPressed: () => Navigator.pop(context, true),
-              child: const Text("Restart")),
-        ],
-      ),
-    );
-
-    if (confirm != true) return;
-
+  Future<void> _restart() async {
+    final ok = await _confirm("Restart Charger", "Restart now?");
+    if (!ok) return;
     try {
-      await BleService.instance.sendCommand(widget.deviceId, "#RESTART#");
+      await BleService.instance.sendCommand(widget.deviceId, "RESTART");
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text("Restart command sent...")),
-        );
+        _snack("Restart sent");
         Navigator.pop(context);
       }
     } catch (e) {
-      debugPrint("❌ Restart error: $e");
+      debugPrint("❌ $e");
     }
   }
 
-  // =====================================================================
-  // UI HELPERS
-  // =====================================================================
-  Widget _row(String label, Widget value) {
-    return Column(children: [
-      Padding(
-        padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 16),
-        child: Row(children: [
-          Expanded(
-            flex: 4,
-            child: Text(label,
-                style: const TextStyle(
-                    color: AppColors.textSecondary, fontSize: 14)),
+  Future<bool> _confirm(String title, String body,
+      {bool destructive = false}) async {
+    return await showDialog<bool>(
+          context: context,
+          builder: (_) => AlertDialog(
+            backgroundColor: _surface,
+            shape:
+                RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+            title: Text(title,
+                style: TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w600,
+                    color: _textPrimary)),
+            content: Text(body,
+                style: TextStyle(fontSize: 13, color: _textSecondary)),
+            actions: [
+              TextButton(
+                  onPressed: () => Navigator.pop(context, false),
+                  child: const Text("Cancel")),
+              TextButton(
+                onPressed: () => Navigator.pop(context, true),
+                child: Text(destructive ? "Reset" : "Confirm",
+                    style: TextStyle(
+                        color:
+                            destructive ? AppColors.error : AppColors.primary)),
+              ),
+            ],
           ),
-          Expanded(flex: 6, child: value),
+        ) ??
+        false;
+  }
+
+  // ================================================================
+  // UI HELPERS
+  // ================================================================
+  Widget _section(String title) => Padding(
+        padding: const EdgeInsets.fromLTRB(16, 20, 16, 8),
+        child: Text(title.toUpperCase(),
+            style: const TextStyle(
+                fontSize: 11,
+                fontWeight: FontWeight.w700,
+                color: AppColors.primary,
+                letterSpacing: 1.2)),
+      );
+
+  Widget _row(String label, String value) => Container(
+        color: _surface,
+        child: Column(children: [
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+            child: Row(children: [
+              Expanded(
+                  flex: 4,
+                  child: Text(label,
+                      style: TextStyle(fontSize: 13, color: _textSecondary))),
+              Expanded(
+                  flex: 6,
+                  child: Text(
+                    value.isEmpty ? "--" : value,
+                    textAlign: TextAlign.right,
+                    style: TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w600,
+                        color: value.isEmpty ? _textSecondary : _textPrimary),
+                  )),
+            ]),
+          ),
+          Divider(height: 1, color: _border),
         ]),
-      ),
-      const Divider(height: 1),
-    ]);
-  }
+      );
 
-  Widget _val(String key) {
-    final v = _display[key] ?? "";
-    return Text(
-      v.isEmpty ? "--" : v,
-      style: const TextStyle(
-          fontSize: 16,
-          fontWeight: FontWeight.w600,
-          color: AppColors.textPrimary),
-    );
-  }
+  Widget _boolRow(String label, bool value) => Container(
+        color: _surface,
+        child: Column(children: [
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+            child: Row(children: [
+              Expanded(
+                  child: Text(label,
+                      style: TextStyle(fontSize: 13, color: _textSecondary))),
+              Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                decoration: BoxDecoration(
+                  color: value
+                      ? AppColors.success.withOpacity(0.12)
+                      : AppColors.error.withOpacity(0.10),
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                child: Text(value ? "ON" : "OFF",
+                    style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                        color: value ? AppColors.success : AppColors.error)),
+              ),
+            ]),
+          ),
+          Divider(height: 1, color: _border),
+        ]),
+      );
 
-  Widget _edit(
-    TextEditingController c, {
+  Widget _dropRow(String label, String value) => Container(
+        color: _surface,
+        child: Column(children: [
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+            child: Row(children: [
+              Expanded(
+                  flex: 4,
+                  child: Text(label,
+                      style: TextStyle(fontSize: 13, color: _textSecondary))),
+              Expanded(
+                  flex: 6,
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.end,
+                    children: [
+                      Flexible(
+                          child: Text(value,
+                              textAlign: TextAlign.right,
+                              style: TextStyle(
+                                  fontSize: 14,
+                                  fontWeight: FontWeight.w600,
+                                  color: _textPrimary))),
+                      const SizedBox(width: 4),
+                      Icon(Icons.keyboard_arrow_down_rounded,
+                          size: 18, color: _textSecondary),
+                    ],
+                  )),
+            ]),
+          ),
+          Divider(height: 1, color: _border),
+        ]),
+      );
+
+  Widget _field(
+    String label,
+    TextEditingController ctrl, {
     TextInputType keyboard = TextInputType.text,
     bool obscure = false,
+    bool readOnly = false,
+    TextInputAction action = TextInputAction.next,
   }) {
-    return TextField(
-      controller: c,
-      keyboardType: keyboard,
-      obscureText: obscure,
-      decoration: const InputDecoration(isDense: true),
-    );
-  }
-
-  Widget _dropdownStr(
-    String value,
-    List<String> options,
-    ValueChanged<String> onChanged,
-  ) {
-    return DropdownButton<String>(
-      value: value,
-      isExpanded: true,
-      items: options
-          .map((o) => DropdownMenuItem(value: o, child: Text(o)))
-          .toList(),
-      onChanged: editMode
-          ? (v) {
-              if (v != null) setState(() => onChanged(v));
-            }
-          : null,
-    );
-  }
-
-  Widget _dropdownInt(
-    int value,
-    Map<int, String> options,
-    ValueChanged<int> onChanged,
-  ) {
-    return DropdownButton<int>(
-      value: value,
-      isExpanded: true,
-      items: options.entries
-          .map((e) => DropdownMenuItem(value: e.key, child: Text(e.value)))
-          .toList(),
-      onChanged: editMode
-          ? (v) {
-              if (v != null) setState(() => onChanged(v));
-            }
-          : null,
-    );
-  }
-
-  Widget _sectionHeader(String title) {
+    final key = GlobalObjectKey(ctrl);
     return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 20, 16, 4),
-      child: Text(title,
-          style: const TextStyle(
-              fontSize: 13,
-              fontWeight: FontWeight.bold,
-              color: AppColors.primary,
-              letterSpacing: 1.1)),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 7),
+      child: Column(
+        key: key,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(label,
+              style: TextStyle(
+                  fontSize: 11,
+                  fontWeight: FontWeight.w500,
+                  color: _textSecondary)),
+          const SizedBox(height: 6),
+          TextField(
+            controller: ctrl,
+            onChanged: (_) {
+              _markConfigChanged();
+            },
+            keyboardType: keyboard,
+            obscureText: obscure,
+            readOnly: readOnly,
+            textInputAction: action,
+            style: TextStyle(
+                fontSize: 14, color: readOnly ? _textSecondary : _textPrimary),
+            scrollPadding: const EdgeInsets.only(bottom: 400),
+            onTap: readOnly
+                ? null
+                : () {
+                    Future.delayed(const Duration(milliseconds: 500), () {
+                      if (key.currentContext != null) {
+                        Scrollable.ensureVisible(key.currentContext!,
+                            duration: const Duration(milliseconds: 300),
+                            curve: Curves.easeOut,
+                            alignment: 0.3);
+                      }
+                    });
+                  },
+            decoration: InputDecoration(
+              isDense: true,
+              filled: true,
+              fillColor: readOnly
+                  ? (_isDark ? AppColors.borderDark : AppColors.borderStrong)
+                  : (_isDark
+                      ? AppColors.surfaceVariantDark
+                      : AppColors.surfaceVariant),
+              contentPadding:
+                  const EdgeInsets.symmetric(horizontal: 14, vertical: 13),
+              border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(10),
+                  borderSide: BorderSide(color: _border)),
+              enabledBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(10),
+                  borderSide: BorderSide(color: _border)),
+              focusedBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(10),
+                  borderSide: BorderSide(
+                      color: readOnly ? _border : AppColors.primary,
+                      width: 1.5)),
+              suffixIcon: readOnly
+                  ? Icon(Icons.lock_outline, size: 16, color: _textSecondary)
+                  : null,
+            ),
+          ),
+        ],
+      ),
     );
   }
 
-  // =====================================================================
-  // TAB: CHARGER INFO
-  // =====================================================================
-  Widget _buildChargerTab() {
-    return ListView(children: [
-      _sectionHeader("CHARGER IDENTITY"),
-      _row("Charger Type",
-          _dropdownInt(chargerType, chargerTypes, (v) => chargerType = v)),
-      _row("Charger Model",
-          _dropdownInt(chargerModel, chargerModels, (v) => chargerModel = v)),
-      _row("Board Model",
-          _dropdownInt(boardModel, boardModels, (v) => boardModel = v)),
-      _row("Serial Number",
-          editMode ? _edit(serialCtrl) : _val("Serial Number")),
-      _row("Charger Name",
-          editMode ? _edit(chargerNameCtrl) : _val("Charger Name")),
-      _row("Charge Point Vendor",
-          editMode ? _edit(vendorCtrl) : _val("Charge Point Vendor")),
-      _row("Charge Point Model",
-          editMode ? _edit(modelCtrl) : _val("Charge Point Model")),
-      _row("Commissioned By",
-          editMode ? _edit(commissionedByCtrl) : _val("Commissioned By")),
-      _row("Commissioned Date",
-          editMode ? _edit(commissionedDateCtrl) : _val("Commissioned Date")),
-      _sectionHeader("FIRMWARE"),
-      _row("Firmware Version",
-          editMode ? _edit(firmwareVersionCtrl) : _val("Firmware Version")),
-      _row(
-          "Slave Firmware",
-          editMode
-              ? _edit(slaveFirmwareVersionCtrl)
-              : _val("Slave Firmware Version")),
-      const SizedBox(height: 20),
-    ]);
+  // Integer field (for meter addresses)
+  Widget _intField(String label, int value, ValueChanged<int> onChanged,
+      {bool readOnly = false}) {
+    final ctrl = TextEditingController(text: value.toString());
+    return _fieldRaw(label, ctrl,
+        readOnly: readOnly, keyboard: TextInputType.number, onChanged: (v) {
+      final n = int.tryParse(v);
+      if (n != null) onChanged(n);
+    });
   }
 
-  // =====================================================================
-  // TAB: COMMUNICATION
-  // =====================================================================
-  Widget _buildCommTab() {
-    return ListView(children: [
-      // ── WiFi ──
-      _sectionHeader("WiFi"),
-      _row("WiFi",
-          _dropdownStr(wifiEnable, enableOptions, (v) => wifiEnable = v)),
-      _row("SSID", editMode ? _edit(wifiSSIDCtrl) : _val("SSID")),
-      _row(
-          "Password",
-          editMode
-              ? _edit(wifiPassCtrl, obscure: true)
-              : const Text("••••••••",
-                  style: TextStyle(color: AppColors.textSecondary))),
-      _row(
-          "Priority",
-          editMode
-              ? _edit(wifiPriorityCtrl, keyboard: TextInputType.number)
-              : _val("WiFi Priority")),
-
-      // ── GSM ──
-      _sectionHeader("GSM / SIM"),
-      _row("GSM", _dropdownStr(gsmEnable, enableOptions, (v) => gsmEnable = v)),
-      _row("APN", editMode ? _edit(gsmAPNCtrl) : _val("APN")),
-      _row(
-          "Priority",
-          editMode
-              ? _edit(gsmPriorityCtrl, keyboard: TextInputType.number)
-              : _val("GSM Priority")),
-
-      // ── Ethernet ──
-      _sectionHeader("ETHERNET"),
-      _row(
-          "Ethernet",
-          _dropdownStr(
-              ethernetEnable, enableOptions, (v) => ethernetEnable = v)),
-      _row("Mode",
-          _dropdownStr(ethernetDHCP, dhcpOptions, (v) => ethernetDHCP = v)),
-      _row("IP Address", editMode ? _edit(ethIPCtrl) : _val("IP Address")),
-      _row("Gateway", editMode ? _edit(ethGWCtrl) : _val("Gateway")),
-      _row("Subnet", editMode ? _edit(ethSubnetCtrl) : _val("Subnet")),
-      _row("DNS", editMode ? _edit(ethDNSCtrl) : _val("DNS")),
-      _row(
-          "Priority",
-          editMode
-              ? _edit(ethPriorityCtrl, keyboard: TextInputType.number)
-              : _val("Ethernet Priority")),
-
-      const SizedBox(height: 20),
-    ]);
-  }
-
-  // =====================================================================
-  // TAB: OCPP
-  // =====================================================================
-  Widget _buildOcppTab() {
-    return ListView(children: [
-      _sectionHeader("OCPP SETTINGS"),
-      _row("OCPP",
-          _dropdownStr(ocppEnable, enableOptions, (v) => ocppEnable = v)),
-      _row("Server URL", editMode ? _edit(ocppURLCtrl) : _val("Server URL")),
-      _row("Charge Point ID",
-          editMode ? _edit(chargePointIDCtrl) : _val("Charge Point ID")),
-      _row(
-          "Heartbeat (sec)",
-          editMode
-              ? _edit(heartbeatCtrl, keyboard: TextInputType.number)
-              : _val("Heartbeat Interval")),
-      const SizedBox(height: 20),
-    ]);
-  }
-
-  // =====================================================================
-  // TAB: HARDWARE
-  // =====================================================================
-  Widget _buildHardwareTab() {
-    return ListView(children: [
-      _sectionHeader("HARDWARE CONFIGURATION"),
-      _row(
-          "Displays",
-          editMode
-              ? _edit(displaysCtrl, keyboard: TextInputType.number)
-              : _val("Displays")),
-      _row(
-          "Connectors",
-          editMode
-              ? _edit(connectorsCtrl, keyboard: TextInputType.number)
-              : _val("Connectors")),
-      _row(
-          "Power Modules",
-          editMode
-              ? _edit(powerModulesCtrl, keyboard: TextInputType.number)
-              : _val("Power Modules")),
-      _row("Battery Backup",
-          _dropdownStr(batteryBackup, enableOptions, (v) => batteryBackup = v)),
-      _sectionHeader("CHARGER ACTIONS"),
-      Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-        child: OutlinedButton.icon(
-          icon: const Icon(Icons.restart_alt),
-          label: const Text("Restart Charger"),
-          onPressed: _restartCharger,
-        ),
+  Widget _fieldRaw(
+    String label,
+    TextEditingController ctrl, {
+    TextInputType keyboard = TextInputType.text,
+    bool readOnly = false,
+    ValueChanged<String>? onChanged,
+  }) {
+    final key = GlobalObjectKey(ctrl);
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 7),
+      child: Column(
+        key: key,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(label,
+              style: TextStyle(
+                  fontSize: 11,
+                  fontWeight: FontWeight.w500,
+                  color: _textSecondary)),
+          const SizedBox(height: 6),
+          TextField(
+            controller: ctrl,
+            keyboardType: keyboard,
+            readOnly: readOnly,
+            onChanged: onChanged,
+            style: TextStyle(
+                fontSize: 14, color: readOnly ? _textSecondary : _textPrimary),
+            scrollPadding: const EdgeInsets.only(bottom: 400),
+            onTap: readOnly
+                ? null
+                : () {
+                    Future.delayed(const Duration(milliseconds: 500), () {
+                      if (key.currentContext != null) {
+                        Scrollable.ensureVisible(key.currentContext!,
+                            duration: const Duration(milliseconds: 300),
+                            curve: Curves.easeOut,
+                            alignment: 0.3);
+                      }
+                    });
+                  },
+            decoration: InputDecoration(
+              isDense: true,
+              filled: true,
+              fillColor: readOnly
+                  ? (_isDark ? AppColors.borderDark : AppColors.borderStrong)
+                  : (_isDark
+                      ? AppColors.surfaceVariantDark
+                      : AppColors.surfaceVariant),
+              contentPadding:
+                  const EdgeInsets.symmetric(horizontal: 14, vertical: 13),
+              border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(10),
+                  borderSide: BorderSide(color: _border)),
+              enabledBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(10),
+                  borderSide: BorderSide(color: _border)),
+              focusedBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(10),
+                  borderSide: BorderSide(
+                      color: readOnly ? _border : AppColors.primary,
+                      width: 1.5)),
+              suffixIcon: readOnly
+                  ? Icon(Icons.lock_outline, size: 16, color: _textSecondary)
+                  : null,
+            ),
+          ),
+        ],
       ),
+    );
+  }
+
+  Widget _dropEdit<T>(String label, T value, Map<T, String> opts,
+          ValueChanged<T> onChanged) =>
       Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 7),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text(label,
+              style: TextStyle(
+                  fontSize: 11,
+                  fontWeight: FontWeight.w500,
+                  color: _textSecondary)),
+          const SizedBox(height: 6),
+          Container(
+            decoration: BoxDecoration(
+              color: _isDark
+                  ? AppColors.surfaceVariantDark
+                  : AppColors.surfaceVariant,
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: _border),
+            ),
+            padding: const EdgeInsets.symmetric(horizontal: 12),
+            child: DropdownButtonHideUnderline(
+              child: DropdownButton<T>(
+                value: value,
+                isExpanded: true,
+                dropdownColor: _surface,
+                style: TextStyle(fontSize: 14, color: _textPrimary),
+                items: opts.entries
+                    .map((e) =>
+                        DropdownMenuItem(value: e.key, child: Text(e.value)))
+                    .toList(),
+                onChanged: (v) {
+                  if (v == null) return;
+
+                  setState(() {
+                    onChanged(v);
+                  });
+
+                  _markConfigChanged();
+                },
+              ),
+            ),
+          ),
+        ]),
+      );
+
+  Widget _strDropEdit(String label, String value, List<String> opts,
+          ValueChanged<String> onChanged) =>
+      _dropEdit<String>(label, value, {for (final o in opts) o: o}, onChanged);
+
+  Widget _toggle(String label, bool value, ValueChanged<bool> onChanged) =>
+      Container(
+        color: Colors.transparent,
+        child: Column(children: [
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+            child: Row(children: [
+              Expanded(
+                  child: Text(label,
+                      style: TextStyle(fontSize: 13, color: _textSecondary))),
+              GestureDetector(
+                onTap: _editMode
+                    ? () {
+                        setState(() {
+                          onChanged(!value);
+                        });
+
+                        _markConfigChanged();
+                      }
+                    : null,
+                child: AnimatedContainer(
+                  duration: const Duration(milliseconds: 200),
+                  width: 52,
+                  height: 28,
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(14),
+                    color: value
+                        ? AppColors.success
+                        : (_isDark
+                            ? AppColors.borderDark
+                            : AppColors.borderStrong),
+                  ),
+                  child: Stack(children: [
+                    AnimatedPositioned(
+                      duration: const Duration(milliseconds: 200),
+                      left: value ? 26 : 2,
+                      top: 2,
+                      child: Container(
+                          width: 24,
+                          height: 24,
+                          decoration: const BoxDecoration(
+                              shape: BoxShape.circle, color: Colors.white)),
+                    ),
+                  ]),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Text(value ? "ON" : "OFF",
+                  style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                      color: value ? AppColors.success : _textSecondary)),
+            ]),
+          ),
+          Divider(height: 1, color: _border),
+        ]),
+      );
+
+  Widget _checkEdit(String label, bool value, ValueChanged<bool> onChanged) =>
+      Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+        child: Row(children: [
+          Expanded(
+              child: Text(label,
+                  style: TextStyle(fontSize: 13, color: _textSecondary))),
+          Checkbox(
+            value: value,
+            onChanged: _editMode
+                ? (bool? v) {
+                    if (v == null) return;
+                    setState(() {
+                      onChanged(v);
+                    });
+                    _markConfigChanged();
+                  }
+                : null,
+            activeColor: AppColors.primary,
+          ),
+        ]),
+      );
+
+  Widget _actionBtn(
+          String label, IconData icon, Color color, VoidCallback fn) =>
+      Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
         child: OutlinedButton.icon(
-          icon: const Icon(Icons.restore, color: Colors.red),
-          label:
-              const Text("Factory Reset", style: TextStyle(color: Colors.red)),
+          icon: Icon(icon, size: 18, color: color),
+          label: Text(label, style: TextStyle(color: color)),
           style: OutlinedButton.styleFrom(
-              side: const BorderSide(color: Colors.red)),
-          onPressed: _factoryReset,
+            side: BorderSide(color: color),
+            shape:
+                RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+            padding: const EdgeInsets.symmetric(vertical: 14),
+          ),
+          onPressed: fn,
         ),
-      ),
-      const SizedBox(height: 20),
+      );
+
+  // ── Meter config block ────────────────────────────────────────
+  Widget _meterBlock({
+    required String title,
+    required String meterType,
+    required List<String> meterOptions,
+    required ValueChanged<String> onMeterTypeChanged,
+    required int voltageAddr,
+    required int currentAddr,
+    required int powerAddr,
+    required int dataType,
+    required int wordOrder,
+    required int scaleExp,
+    required int offsetAddr,
+    required ValueChanged<int> onVoltageAddr,
+    required ValueChanged<int> onCurrentAddr,
+    required ValueChanged<int> onPowerAddr,
+    required ValueChanged<int> onDataType,
+    required ValueChanged<int> onWordOrder,
+    required ValueChanged<int> onScaleExp,
+    required ValueChanged<int> onOffsetAddr,
+  }) {
+    final isUserDefined = meterType == 'User Defined';
+    final isReadOnly = !isUserDefined || !_editMode;
+
+    if (!_editMode) {
+      return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        _section(title),
+        _dropRow("Meter Type", meterType),
+        _row("Voltage Address", voltageAddr.toString()),
+        _row("Current Address", currentAddr.toString()),
+        _row("Power Address", powerAddr.toString()),
+        _dropRow("Data Type", dataTypes[dataType] ?? ""),
+        _dropRow("Word Order", wordOrders[wordOrder] ?? ""),
+        _row("Scale Exponent", scaleExp.toString()),
+        _row("Offset Address", offsetAddr.toString()),
+      ]);
+    }
+
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      _section(title),
+      _strDropEdit("Meter Type", meterType, meterOptions, (v) {
+        onMeterTypeChanged(v);
+        // Apply preset values when non-custom selected
+        final preset = meterOptions == acMeterOptions
+            ? acMeterPresets[v]
+            : dcMeterPresets[v];
+        if (preset != null) {
+          setState(() {
+            onVoltageAddr(preset.voltage);
+            onCurrentAddr(preset.current);
+            onPowerAddr(preset.power);
+            onDataType(preset.dataType);
+            onWordOrder(preset.wordOrder);
+            onScaleExp(preset.scaleExponent);
+            onOffsetAddr(preset.offsetAddress);
+          });
+        }
+      }),
+      _intField("Voltage Address", voltageAddr, onVoltageAddr,
+          readOnly: isReadOnly),
+      _intField("Current Address", currentAddr, onCurrentAddr,
+          readOnly: isReadOnly),
+      _intField("Power Address", powerAddr, onPowerAddr, readOnly: isReadOnly),
+      _dropEdit(
+          "Data Type", dataType, dataTypes, isReadOnly ? (_) {} : onDataType),
+      _dropEdit("Word Order", wordOrder, wordOrders,
+          isReadOnly ? (_) {} : onWordOrder),
+      _intField("Scale Exponent", scaleExp, onScaleExp, readOnly: isReadOnly),
+      _intField("Offset Address", offsetAddr, onOffsetAddr,
+          readOnly: isReadOnly),
     ]);
   }
 
-  // =====================================================================
-  // BUILD
-  // =====================================================================
-  static const _tabs = [
-    Tab(icon: Icon(Icons.ev_station), text: "Charger"),
-    Tab(icon: Icon(Icons.wifi), text: "Comms"),
-    Tab(icon: Icon(Icons.cloud), text: "OCPP"),
-    Tab(icon: Icon(Icons.settings), text: "Hardware"),
-  ];
+  // ================================================================
+  // TABS
+  // ================================================================
 
+  Widget _chargerTab() {
+    if (_editMode) {
+      return ListView(
+        keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+        padding: const EdgeInsets.only(bottom: 300),
+        children: [
+          _section("Device Information"),
+          _checkEdit("Default Config", defaultConfig, (v) => defaultConfig = v),
+          _dropEdit("Charger Type", chargerType, chargerTypes,
+              (v) => chargerType = v),
+          _dropEdit("Charger Model", chargerModel, chargerModels,
+              (v) => chargerModel = v),
+          _dropEdit(
+              "Board Model", boardModel, boardModels, (v) => boardModel = v),
+          _field("Serial Number", serialCtrl),
+          _field("Charger Name", chargerNameCtrl),
+          _field("Charge Point Vendor", vendorCtrl),
+          _field("Charge Point Model", modelCtrl),
+          _field("Commissioned By", commissionedByCtrl, readOnly: true),
+          _field("Commissioned Date", commissionedDateCtrl, readOnly: true),
+          _field("Firmware Version", firmwareVersionCtrl, readOnly: true),
+          _field("Slave Firmware Version", slaveFirmwareVersionCtrl,
+              readOnly: true),
+          _section("Charging Configuration"),
+          _dropEdit("Charging Mode", chargingMode, chargingModes,
+              (v) => chargingMode = v),
+          _checkEdit("Smart Charging", smartCharging, (v) => smartCharging = v),
+          _checkEdit("Battery Backup", batteryBackup, (v) => batteryBackup = v),
+          _checkEdit("Resume Session After Power Loss", resumeSession,
+              (v) => resumeSession = v),
+          _checkEdit("Restore Session From Fault", restoreFromFault,
+              (v) => restoreFromFault = v),
+          _field("Restore Fault Time (sec)", restoreTimeCtrl,
+              keyboard: TextInputType.number, action: TextInputAction.done),
+        ],
+      );
+    }
+    return ListView(children: [
+      _section("Device Information"),
+      _boolRow("Default Config", defaultConfig),
+      _dropRow("Charger Type", chargerTypes[chargerType] ?? ""),
+      _dropRow("Charger Model", chargerModels[chargerModel] ?? ""),
+      _dropRow("Board Model", boardModels[boardModel] ?? ""),
+      _row("Serial Number", serialCtrl.text),
+      _row("Charger Name", chargerNameCtrl.text),
+      _row("Charge Point Vendor", vendorCtrl.text),
+      _row("Charge Point Model", modelCtrl.text),
+      _row("Commissioned By", commissionedByCtrl.text),
+      _row("Commissioned Date", commissionedDateCtrl.text),
+      _row("Firmware Version", firmwareVersionCtrl.text),
+      _row("Slave Firmware Version", slaveFirmwareVersionCtrl.text),
+      _section("Charging Configuration"),
+      _dropRow("Charging Mode", chargingModes[chargingMode] ?? ""),
+      _boolRow("Smart Charging", smartCharging),
+      _boolRow("Battery Backup", batteryBackup),
+      _boolRow("Resume Session After Power Loss", resumeSession),
+      _boolRow("Restore Session From Fault", restoreFromFault),
+      _row("Restore Fault Time (sec)", restoreTimeCtrl.text),
+    ]);
+  }
+
+  Widget _networkTab() {
+    if (_editMode) {
+      return ListView(
+        keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+        padding: const EdgeInsets.only(bottom: 300),
+        children: [
+          _section("Network Configuration"),
+          _dropEdit("Network Mode", networkMode, networkModes,
+              (v) => networkMode = v),
+          _field("WebSocket URL", webSocketURLCtrl),
+          _section("WiFi Settings"),
+          _toggle("WiFi Enable", wifiEnable, (v) => wifiEnable = v),
+          if (wifiEnable) ...[
+            _field("WiFi Priority", wifiPriorityCtrl,
+                keyboard: TextInputType.number),
+            _field("WiFi SSID", wifiSSIDCtrl),
+            _field("WiFi Password", wifiPassCtrl, obscure: true),
+          ],
+          _section("Ethernet Settings"),
+          _toggle("Ethernet Enable", ethernetEnable, (v) => ethernetEnable = v),
+          if (ethernetEnable) ...[
+            _field("Ethernet Priority", ethernetPriorityCtrl,
+                keyboard: TextInputType.number),
+            _dropEdit("Ethernet Config", ethernetConfig, ethernetTypes,
+                (v) => ethernetConfig = v),
+            _field("IP Address", ipAddressCtrl),
+            _field("Gateway", gatewayCtrl),
+            _field("DNS Address", dnsCtrl),
+            _field("Subnet Mask", subnetCtrl),
+            _field("MAC Address", macAddressCtrl),
+          ],
+          _section("GSM Settings"),
+          _toggle("GSM Enable", gsmEnable, (v) => gsmEnable = v),
+          if (gsmEnable) ...[
+            _field("GSM Priority", gsmPriorityCtrl,
+                keyboard: TextInputType.number),
+            _field("GSM APN", gsmAPNCtrl),
+            _field("SIM IMEI Number", simIMEICtrl, readOnly: true),
+            _field("SIM IMSI Number", simIMSICtrl,
+                readOnly: true, action: TextInputAction.done),
+          ],
+        ],
+      );
+    }
+    return ListView(children: [
+      _section("Network Configuration"),
+      _dropRow("Network Mode", networkModes[networkMode] ?? ""),
+      _row("WebSocket URL", webSocketURLCtrl.text),
+      _section("WiFi Settings"),
+      _boolRow("WiFi Enable", wifiEnable),
+      if (wifiEnable) ...[
+        _row("WiFi Priority", wifiPriorityCtrl.text),
+        _row("WiFi SSID", wifiSSIDCtrl.text),
+        _row("WiFi Password", wifiPassCtrl.text.isEmpty ? "--" : "••••••••"),
+      ],
+      _section("Ethernet Settings"),
+      _boolRow("Ethernet Enable", ethernetEnable),
+      if (ethernetEnable) ...[
+        _row("Ethernet Priority", ethernetPriorityCtrl.text),
+        _dropRow("Ethernet Config", ethernetTypes[ethernetConfig] ?? ""),
+        _row("IP Address", ipAddressCtrl.text),
+        _row("Gateway", gatewayCtrl.text),
+        _row("DNS Address", dnsCtrl.text),
+        _row("Subnet Mask", subnetCtrl.text),
+        _row("MAC Address", macAddressCtrl.text),
+      ],
+      _section("GSM Settings"),
+      _boolRow("GSM Enable", gsmEnable),
+      if (gsmEnable) ...[
+        _row("GSM Priority", gsmPriorityCtrl.text),
+        _row("GSM APN", gsmAPNCtrl.text),
+        _row("SIM IMEI Number", simIMEICtrl.text),
+        _row("SIM IMSI Number", simIMSICtrl.text),
+      ],
+    ]);
+  }
+
+  Widget _hardwareTab() {
+    if (_editMode) {
+      return ListView(
+        keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+        padding: const EdgeInsets.only(bottom: 300),
+        children: [
+          _section("Hardware Configuration"),
+          _field("Number of Displays", displaysCtrl,
+              keyboard: TextInputType.number),
+          _field("Number of Connectors", connectorsCtrl,
+              keyboard: TextInputType.number),
+          _field("Number of Power Modules", powerModulesCtrl,
+              keyboard: TextInputType.number),
+          _section("Protection & Safety Thresholds"),
+          _field("DC Over Voltage", dcOverVoltCtrl,
+              keyboard: TextInputType.numberWithOptions(decimal: true)),
+          _field("AC Over Voltage", acOverVoltCtrl,
+              keyboard: TextInputType.numberWithOptions(decimal: true)),
+          _field("DC Under Voltage", dcUnderVoltCtrl,
+              keyboard: TextInputType.numberWithOptions(decimal: true)),
+          _field("AC Under Voltage", acUnderVoltCtrl,
+              keyboard: TextInputType.numberWithOptions(decimal: true)),
+          _field("DC Over Current", dcOverCurrCtrl,
+              keyboard: TextInputType.numberWithOptions(decimal: true)),
+          _field("AC Over Current", acOverCurrCtrl,
+              keyboard: TextInputType.numberWithOptions(decimal: true)),
+          _field("Over Temperature", overTempCtrl,
+              keyboard: TextInputType.numberWithOptions(decimal: true),
+              action: TextInputAction.done),
+          _section("Power Modules"),
+          ...List.generate(8, (i) {
+            final pmNum = i + 1;
+            final numPM = int.tryParse(powerModulesCtrl.text.trim()) ?? 0;
+            if (i >= numPM) return const SizedBox.shrink();
+
+            if (!_editMode) {
+              return Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+                      child: Text("PM$pmNum",
+                          style: const TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w600,
+                              color: AppColors.primary)),
+                    ),
+                    _boolRow("Available", pmAvailable[i]),
+                    _row("Module Address", pmAddressCtrl[i].text),
+                    _row("Max Voltage", pmMaxVoltCtrl[i].text),
+                    _row("Max Current", pmMaxCurrCtrl[i].text),
+                    _row("Min Voltage", pmMinVoltCtrl[i].text),
+                    _row("Min Current", pmMinCurrCtrl[i].text),
+                    _row("Max Power", pmMaxPowerCtrl[i].text),
+                    _row("Min Power", pmMinPowerCtrl[i].text),
+                    _row("Max Temperature", pmMaxTempCtrl[i].text),
+                    _row("Min Temperature", pmMinTempCtrl[i].text),
+                  ]);
+            }
+
+            return Container(
+              margin: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: _isDark
+                    ? AppColors.surfaceVariantDark
+                    : AppColors.surfaceVariant,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: _border),
+              ),
+              child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(children: [
+                      Text("PM$pmNum",
+                          style: const TextStyle(
+                              fontSize: 13,
+                              fontWeight: FontWeight.w700,
+                              color: AppColors.primary)),
+                      const Spacer(),
+                      Text("Available",
+                          style:
+                              TextStyle(fontSize: 12, color: _textSecondary)),
+                      const SizedBox(width: 8),
+                      Switch(
+                        value: pmAvailable[i],
+                        onChanged: (v) {
+                          setState(() {
+                            pmAvailable[i] = v;
+                          });
+
+                          _markPowerModuleChanged();
+                        },
+                        activeColor: AppColors.primary,
+                      ),
+                    ]),
+                    if (pmAvailable[i]) ...[
+                      _miniIntField(
+                          "Mod.Addr", int.tryParse(pmAddressCtrl[i].text) ?? 0,
+                          (v) {
+                        pmAddressCtrl[i].text = v.toString();
+                        _markPowerModuleChanged();
+                      }),
+                      _miniFloatField("MaxVolt", pmMaxVoltCtrl[i]),
+                      _miniFloatField("MaxCurr", pmMaxCurrCtrl[i]),
+                      _miniFloatField("MinVolt", pmMinVoltCtrl[i]),
+                      _miniFloatField("MinCurr", pmMinCurrCtrl[i]),
+                      _miniFloatField("MaxPower", pmMaxPowerCtrl[i]),
+                      _miniFloatField("MinPower", pmMinPowerCtrl[i]),
+                      _miniFloatField("MaxTemp", pmMaxTempCtrl[i]),
+                      _miniFloatField("MinTemp", pmMinTempCtrl[i]),
+                    ],
+                  ]),
+            );
+          }),
+          _section("Actions"),
+          _actionBtn("Restart Charger", Icons.restart_alt_rounded, _textPrimary,
+              _restart),
+          _actionBtn("Factory Reset", Icons.restore_rounded, AppColors.error,
+              _factoryReset),
+        ],
+      );
+    }
+    return ListView(children: [
+      _section("Hardware Configuration"),
+      _row("Number of Displays", displaysCtrl.text),
+      _row("Number of Connectors", connectorsCtrl.text),
+      _row("Number of Power Modules", powerModulesCtrl.text),
+      _section("Protection & Safety Thresholds"),
+      _row("DC Over Voltage", dcOverVoltCtrl.text),
+      _row("AC Over Voltage", acOverVoltCtrl.text),
+      _row("DC Under Voltage", dcUnderVoltCtrl.text),
+      _row("AC Under Voltage", acUnderVoltCtrl.text),
+      _row("DC Over Current", dcOverCurrCtrl.text),
+      _row("AC Over Current", acOverCurrCtrl.text),
+      _row("Over Temperature", overTempCtrl.text),
+      _section("Actions"),
+      _actionBtn(
+          "Restart Charger", Icons.restart_alt_rounded, _textPrimary, _restart),
+      _actionBtn("Factory Reset", Icons.restore_rounded, AppColors.error,
+          _factoryReset),
+    ]);
+  }
+
+  // ── Meter channel widget ──────────────────────────────────────
+  Widget _meterChannel(String title, MeterData data, {bool readOnly = false}) {
+    final bool ro = readOnly || !_editMode;
+
+    if (!_editMode) {
+      return Padding(
+        padding: const EdgeInsets.only(left: 16, top: 8, bottom: 4),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text(title,
+              style: const TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                  color: AppColors.primary)),
+          const SizedBox(height: 4),
+          _row("Module Addr", data.moduleAddress.toString()),
+          _row("Reg. Count", data.registerCount.toString()),
+          _row("Data Type", dataTypes[data.dataType] ?? ""),
+          _row("Word Order", wordOrders[data.wordOrder] ?? ""),
+          _row("Scale Exp", data.scaleExponent.toString()),
+        ]),
+      );
+    }
+
+    return Padding(
+      padding: const EdgeInsets.only(left: 8, right: 0, top: 4, bottom: 8),
+      child: Container(
+        margin: const EdgeInsets.symmetric(horizontal: 16),
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color:
+              _isDark ? AppColors.surfaceVariantDark : AppColors.surfaceVariant,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: _border),
+        ),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text(title,
+              style: const TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                  color: AppColors.primary)),
+          const SizedBox(height: 8),
+          _miniIntField(
+              "M.Addr",
+              data.moduleAddress,
+              ro
+                  ? (_) {}
+                  : (v) {
+                      setState(() {
+                        data.moduleAddress = v;
+                      });
+                      _markMeterChanged();
+                    }),
+          _miniIntField(
+              "Reg.Count",
+              data.registerCount,
+              ro
+                  ? (_) {}
+                  : (v) {
+                      setState(() {
+                        data.registerCount = v;
+                      });
+                      _markMeterChanged();
+                    }),
+          _miniDropEdit<int>(
+            "DataType",
+            data.dataType,
+            dataTypes,
+            ro
+                ? (_) {}
+                : (v) {
+                    setState(() {
+                      data.dataType = v;
+                    });
+                    _markMeterChanged();
+                  },
+          ),
+          _miniDropEdit<int>(
+            "W.Order",
+            data.wordOrder,
+            wordOrders,
+            ro
+                ? (_) {}
+                : (v) {
+                    setState(() {
+                      data.wordOrder = v;
+                    });
+                    _markMeterChanged();
+                  },
+          ),
+          _miniIntField(
+              "Exp",
+              data.scaleExponent,
+              ro
+                  ? (_) {}
+                  : (v) {
+                      setState(() {
+                        data.scaleExponent = v;
+                      });
+                      _markMeterChanged();
+                    }),
+        ]),
+      ),
+    );
+  }
+
+  Widget _miniDropEdit<T>(String label, T value, Map<T, String> opts,
+          ValueChanged<T> onChanged) =>
+      Padding(
+        padding: const EdgeInsets.symmetric(vertical: 3),
+        child: Row(children: [
+          SizedBox(
+              width: 72,
+              child: Text(label,
+                  style: TextStyle(fontSize: 11, color: _textSecondary))),
+          Expanded(
+            child: Container(
+              height: 32,
+              padding: const EdgeInsets.symmetric(horizontal: 8),
+              decoration: BoxDecoration(
+                color: _surface,
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: _border),
+              ),
+              child: DropdownButtonHideUnderline(
+                child: DropdownButton<T>(
+                  value: value,
+                  isExpanded: true,
+                  isDense: true,
+                  dropdownColor: _surface,
+                  style: TextStyle(fontSize: 12, color: _textPrimary),
+                  items: opts.entries
+                      .map((e) => DropdownMenuItem(
+                          value: e.key,
+                          child: Text(e.value,
+                              style: TextStyle(
+                                  fontSize: 12, color: _textPrimary))))
+                      .toList(),
+                  onChanged: (v) {
+                    if (v != null) onChanged(v);
+                  },
+                ),
+              ),
+            ),
+          ),
+        ]),
+      );
+
+  Widget _miniIntField(String label, int value, ValueChanged<int> onChanged) {
+    final ctrl = TextEditingController(text: value.toString());
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 3),
+      child: Row(children: [
+        SizedBox(
+            width: 72,
+            child: Text(label,
+                style: TextStyle(fontSize: 11, color: _textSecondary))),
+        Expanded(
+          child: SizedBox(
+            height: 32,
+            child: TextField(
+              controller: ctrl,
+              keyboardType: TextInputType.number,
+              scrollPadding: const EdgeInsets.only(bottom: 400),
+              style: TextStyle(fontSize: 12, color: _textPrimary),
+              onChanged: (v) {
+                final n = int.tryParse(v);
+                if (n != null) onChanged(n);
+              },
+              decoration: InputDecoration(
+                isDense: true,
+                filled: true,
+                fillColor: _surface,
+                contentPadding:
+                    const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(8),
+                    borderSide: BorderSide(color: _border)),
+                enabledBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(8),
+                    borderSide: BorderSide(color: _border)),
+                focusedBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(8),
+                    borderSide:
+                        const BorderSide(color: AppColors.primary, width: 1.5)),
+              ),
+            ),
+          ),
+        ),
+      ]),
+    );
+  }
+
+  Widget _miniFloatField(String label, TextEditingController ctrl) => Padding(
+        padding: const EdgeInsets.symmetric(vertical: 3),
+        child: Row(children: [
+          SizedBox(
+              width: 72,
+              child: Text(label,
+                  style: TextStyle(fontSize: 11, color: _textSecondary))),
+          Expanded(
+            child: SizedBox(
+              height: 32,
+              child: TextField(
+                controller: ctrl,
+                onChanged: (_) {
+                  _markPowerModuleChanged();
+                },
+                keyboardType:
+                    const TextInputType.numberWithOptions(decimal: true),
+                scrollPadding: const EdgeInsets.only(bottom: 400),
+                style: TextStyle(fontSize: 12, color: _textPrimary),
+                decoration: InputDecoration(
+                  isDense: true,
+                  filled: true,
+                  fillColor: _surface,
+                  contentPadding:
+                      const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                  border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(8),
+                      borderSide: BorderSide(color: _border)),
+                  enabledBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(8),
+                      borderSide: BorderSide(color: _border)),
+                  focusedBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(8),
+                      borderSide: const BorderSide(
+                          color: AppColors.primary, width: 1.5)),
+                ),
+              ),
+            ),
+          ),
+        ]),
+      );
+  Widget _metersTab() {
+    final connectors = _connectorCount;
+    final isUserAC = acMeterType == 'User Defined';
+    final isUserDC1 = dcMeter1Type == 'User Defined';
+    final isUserDC2 = dcMeter2Type == 'User Defined';
+
+    return ListView(
+      keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+      padding: const EdgeInsets.only(bottom: 300),
+      children: [
+        // ── AC Meter ────────────────────────────────────────────
+        _section("AC Meter"),
+        if (_editMode)
+          _strDropEdit("Meter Type", acMeterType, acMeterOptions, (v) {
+            setState(() {
+              acMeterType = v;
+            });
+
+            _markMeterChanged();
+          })
+        else
+          _dropRow("Meter Type", acMeterType),
+        if (_editMode)
+          _intField("Offset Address", acOffsetAddr, (v) {
+            acOffsetAddr = v;
+            _markMeterChanged();
+          }, readOnly: !isUserAC)
+        else
+          _row("Offset Address", acOffsetAddr.toString()),
+
+        _meterChannel("VoltageV1N", acV1N, readOnly: !isUserAC),
+        _meterChannel("VoltageV2N", acV2N, readOnly: !isUserAC),
+        _meterChannel("VoltageV3N", acV3N, readOnly: !isUserAC),
+        _meterChannel("VoltageV12", acV12, readOnly: !isUserAC),
+        _meterChannel("VoltageV23", acV23, readOnly: !isUserAC),
+        _meterChannel("VoltageV31", acV31, readOnly: !isUserAC),
+        _meterChannel("CurrentI1", acI1, readOnly: !isUserAC),
+        _meterChannel("CurrentI2", acI2, readOnly: !isUserAC),
+        _meterChannel("CurrentI3", acI3, readOnly: !isUserAC),
+        _meterChannel("TotalKW", acTotalKW, readOnly: !isUserAC),
+        _meterChannel("AveragePF", acAvgPF, readOnly: !isUserAC),
+        _meterChannel("TotalKWh", acTotalKWh, readOnly: !isUserAC),
+        _meterChannel("CumulativeKWh", acCumKWh, readOnly: !isUserAC),
+        _meterChannel("ResetCumulativeKWh", acResetCumKWh, readOnly: !isUserAC),
+
+        // ── DC Meter 1 ──────────────────────────────────────────
+        if (connectors >= 1) ...[
+          _section("DC Meter 1"),
+          if (_editMode)
+            _strDropEdit("Meter Type", dcMeter1Type, dcMeterOptions, (v) {
+              setState(() {
+                dcMeter1Type = v;
+              });
+
+              _markMeterChanged();
+            })
+          else
+            _dropRow("Meter Type", dcMeter1Type),
+          if (_editMode)
+            _intField("Offset Address", acOffsetAddr, (v) {
+              acOffsetAddr = v;
+              _markMeterChanged();
+            }, readOnly: !isUserAC)
+          else
+            _row("Offset Address", acOffsetAddr.toString()),
+          _row("Assigned Gun", "1"),
+          _meterChannel("Voltage", dc1Voltage, readOnly: !isUserDC1),
+          _meterChannel("Current", dc1Current, readOnly: !isUserDC1),
+          _meterChannel("Power", dc1Power, readOnly: !isUserDC1),
+          _meterChannel("Energy", dc1Energy, readOnly: !isUserDC1),
+        ],
+
+        // ── DC Meter 2 ──────────────────────────────────────────
+        if (connectors >= 2) ...[
+          _section("DC Meter 2"),
+          if (_editMode)
+            _strDropEdit("Meter Type", dcMeter2Type, dcMeterOptions, (v) {
+              setState(() {
+                dcMeter2Type = v;
+              });
+
+              _markMeterChanged();
+            })
+          else
+            _dropRow("Meter Type", dcMeter2Type),
+          if (_editMode)
+            _intField("Offset Address", acOffsetAddr, (v) {
+              acOffsetAddr = v;
+              _markMeterChanged();
+            }, readOnly: !isUserAC)
+          else
+            _row("Offset Address", acOffsetAddr.toString()),
+          _row("Assigned Gun", "2"),
+          _meterChannel("Voltage", dc2Voltage, readOnly: !isUserDC2),
+          _meterChannel("Current", dc2Current, readOnly: !isUserDC2),
+          _meterChannel("Power", dc2Power, readOnly: !isUserDC2),
+          _meterChannel("Energy", dc2Energy, readOnly: !isUserDC2),
+        ],
+
+        if (connectors == 0)
+          Padding(
+            padding: const EdgeInsets.all(24),
+            child: Text(
+              "Set Number of Connectors in Hardware tab\nto see DC Meters",
+              textAlign: TextAlign.center,
+              style: TextStyle(fontSize: 13, color: _textSecondary),
+            ),
+          ),
+      ],
+    );
+  }
+
+  Widget _otaTab() {
+    if (_editMode) {
+      return ListView(
+        keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+        padding: const EdgeInsets.only(bottom: 300),
+        children: [
+          _section("OTA Configuration"),
+          _checkEdit(
+              "OTA URL From CMS", otaUrlFromCMS, (v) => otaUrlFromCMS = v),
+          _field("OTA URL", otaURLCtrl),
+          _section("Diagnostic Configuration"),
+          _checkEdit("Diagnostic Server", diagnosticServer,
+              (v) => diagnosticServer = v),
+          _field("Diagnostic Server URL", diagnosticURLCtrl,
+              action: TextInputAction.done),
+        ],
+      );
+    }
+    return ListView(children: [
+      _section("OTA Configuration"),
+      _boolRow("OTA URL From CMS", otaUrlFromCMS),
+      _row("OTA URL", otaURLCtrl.text),
+      _section("Diagnostic Configuration"),
+      _boolRow("Diagnostic Server", diagnosticServer),
+      _row("Diagnostic Server URL", diagnosticURLCtrl.text),
+    ]);
+  }
+
+  Widget _comingSoon(String name) => Center(
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          Container(
+            width: 72,
+            height: 72,
+            decoration: BoxDecoration(
+              color: AppColors.primary.withOpacity(0.1),
+              borderRadius: BorderRadius.circular(18),
+            ),
+            child: const Icon(Icons.construction_rounded,
+                color: AppColors.primary, size: 36),
+          ),
+          const SizedBox(height: 16),
+          Text("$name — Coming Soon",
+              style: const TextStyle(
+                  fontSize: 16,
+                  fontWeight: FontWeight.w600,
+                  color: AppColors.primary)),
+          const SizedBox(height: 8),
+          Text("This section is under development",
+              style: TextStyle(fontSize: 13, color: _textSecondary)),
+        ]),
+      );
+
+  // ================================================================
+  // BUILD
+  // ================================================================
   @override
   Widget build(BuildContext context) {
-    return DefaultTabController(
-      length: 4,
+    return PopScope(
+      canPop: false,
+      onPopInvoked: (didPop) async {
+        if (didPop) return;
+        if (_editMode) {
+          await _returnToInfoMode();
+          return;
+        }
+        FocusScope.of(context).unfocus();
+        final ok = await _confirm(
+            "Disconnect", "Disconnect from charger and return to scan screen?");
+        if (!ok) return;
+        BleService.instance.disconnect(widget.deviceId);
+        if (mounted) Navigator.pop(context);
+      },
       child: Scaffold(
+        backgroundColor: _bg,
+        resizeToAvoidBottomInset: true,
         appBar: AppBar(
-          title: const Text("EVSE Configuration"),
-          bottom: TabBar(
-            tabs: _tabs,
-            onTap: (i) => setState(() => _tabIndex = i),
-          ),
+          backgroundColor: _surface,
+          leading: _editMode
+              ? IconButton(
+                  icon: const Icon(Icons.arrow_back_rounded),
+                  onPressed: _returnToInfoMode,
+                )
+              : null,
+          // FIX: Use shorter title so it doesn't get truncated
+          title: Column(children: [
+            Text("EVSE Config",
+                style: TextStyle(
+                    fontSize: 15,
+                    fontWeight: FontWeight.w600,
+                    color: _textPrimary)),
+            Row(mainAxisSize: MainAxisSize.min, children: [
+              Container(
+                  width: 6,
+                  height: 6,
+                  decoration: const BoxDecoration(
+                      shape: BoxShape.circle, color: AppColors.success)),
+              const SizedBox(width: 4),
+              Text("Connected",
+                  style: TextStyle(fontSize: 10, color: _textSecondary)),
+            ]),
+          ]),
           actions: [
+            // Theme toggle
+            IconButton(
+              icon: Icon(
+                  _isDark ? Icons.light_mode_rounded : Icons.dark_mode_rounded,
+                  size: 20,
+                  color: _textSecondary),
+              onPressed: () => EVSEApp.of(context)?.toggleTheme(),
+            ),
+            // Reset button
+            IconButton(
+              tooltip: "Reset to saved config",
+              icon: Icon(Icons.history_rounded,
+                  color: AppColors.warning, size: 22),
+              onPressed: _resetToSaved,
+            ),
+            // Disconnect
+            IconButton(
+              tooltip: "Disconnect",
+              icon: const Icon(Icons.bluetooth_disabled_rounded,
+                  color: AppColors.error, size: 22),
+              onPressed: _disconnecting ? null : _disconnect,
+            ),
+            // Edit / Save
             if (!_loading)
               IconButton(
-                icon: Icon(editMode ? Icons.save : Icons.edit),
+                icon: Icon(
+                  _editMode ? Icons.save_rounded : Icons.edit_rounded,
+                  color: AppColors.primary,
+                ),
                 onPressed: _saving
                     ? null
                     : () async {
-                        if (editMode) await _save();
-                        if (mounted) setState(() => editMode = !editMode);
+                        if (_editMode) {
+                          // Save button — stays in edit mode
+                          FocusScope.of(context).unfocus();
+                          await Future.delayed(
+                              const Duration(milliseconds: 200));
+                          await _save();
+                        } else {
+                          // Pencil icon — enter edit mode
+                          setState(() => _editMode = true);
+                        }
                       },
               ),
           ],
+          bottom: TabBar(
+            controller: _tabCtrl,
+            isScrollable: true,
+            tabAlignment: TabAlignment.start,
+            tabs: const [
+              Tab(
+                  icon: Icon(Icons.ev_station_rounded, size: 16),
+                  text: "Charger"),
+              Tab(icon: Icon(Icons.wifi_rounded, size: 16), text: "Network"),
+              Tab(
+                  icon: Icon(Icons.settings_rounded, size: 16),
+                  text: "Hardware"),
+              Tab(icon: Icon(Icons.speed_rounded, size: 16), text: "Meters"),
+              Tab(
+                  icon: Icon(Icons.system_update_rounded, size: 16),
+                  text: "OTA"),
+              Tab(icon: Icon(Icons.cloud_rounded, size: 16), text: "OCPP"),
+              Tab(icon: Icon(Icons.device_hub_rounded, size: 16), text: "Mux"),
+            ],
+          ),
         ),
         body: Stack(children: [
           if (_loading)
-            const Center(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
+            Center(
+                child: Column(mainAxisSize: MainAxisSize.min, children: [
+              const CircularProgressIndicator(color: AppColors.primary),
+              const SizedBox(height: 16),
+              Text("Reading configuration...",
+                  style: TextStyle(fontSize: 13, color: _textSecondary)),
+            ]))
+          else
+            GestureDetector(
+              onTap: () => FocusScope.of(context).unfocus(),
+              behavior: HitTestBehavior.translucent,
+              child: TabBarView(
+                controller: _tabCtrl,
                 children: [
-                  CircularProgressIndicator(),
-                  SizedBox(height: 16),
-                  Text("Reading charger configuration..."),
+                  _chargerTab(),
+                  _networkTab(),
+                  _hardwareTab(),
+                  _metersTab(),
+                  _otaTab(),
+                  _comingSoon("OCPP"),
+                  _comingSoon("Mux"),
                 ],
               ),
-            )
-          else
-            TabBarView(children: [
-              _buildChargerTab(),
-              _buildCommTab(),
-              _buildOcppTab(),
-              _buildHardwareTab(),
-            ]),
+            ),
           if (_saving)
-            const ColoredBox(
-              color: Color.fromARGB(140, 0, 0, 0),
+            Container(
+              color: Colors.black.withOpacity(0.4),
               child: Center(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    CircularProgressIndicator(color: Colors.white),
-                    SizedBox(height: 16),
-                    Text("Saving configuration...",
-                        style: TextStyle(color: Colors.white)),
-                  ],
-                ),
-              ),
+                  child: Container(
+                padding: const EdgeInsets.all(28),
+                decoration: BoxDecoration(
+                    color: _surface, borderRadius: BorderRadius.circular(20)),
+                child: Column(mainAxisSize: MainAxisSize.min, children: [
+                  const CircularProgressIndicator(color: AppColors.primary),
+                  const SizedBox(height: 16),
+                  Text("Saving configuration...",
+                      style: TextStyle(fontSize: 13, color: _textSecondary)),
+                ]),
+              )),
+            ),
+          if (_disconnecting)
+            Container(
+              color: Colors.black.withOpacity(0.4),
+              child: Center(
+                  child: Container(
+                padding: const EdgeInsets.all(28),
+                decoration: BoxDecoration(
+                    color: _surface, borderRadius: BorderRadius.circular(20)),
+                child: Column(mainAxisSize: MainAxisSize.min, children: [
+                  const CircularProgressIndicator(color: AppColors.error),
+                  const SizedBox(height: 16),
+                  Text("Disconnecting...",
+                      style: TextStyle(fontSize: 13, color: _textSecondary)),
+                ]),
+              )),
             ),
         ]),
       ),

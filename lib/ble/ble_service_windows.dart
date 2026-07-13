@@ -5,9 +5,11 @@ import 'package:flutter/foundation.dart';
 import 'package:win_ble/win_ble.dart';
 import 'package:win_ble/win_file.dart';
 import 'ble_service_base.dart' as base;
+import 'ble_protocol.dart';
+import '../config/evse_config.dart';
 
 // ================================================================
-// WINDOWS BLE SERVICE — win_ble 1.1.1
+// WINDOWS BLE SERVICE — Company Protocol
 // ================================================================
 class BleServiceWindows extends base.BleServiceBase {
   BleServiceWindows._internal();
@@ -23,15 +25,13 @@ class BleServiceWindows extends base.BleServiceBase {
   }
 
   final Map<String, bool> _gattReady = {};
-  StreamSubscription? _notifySubscription;
+  StreamSubscription? _notifySub;
   Future<void> _operation = Future.value();
-  static const int _writeChunkSize = 180;
 
-  // Hardcoded UUIDs — exact strings from ESP discovery
-  static const String _svcUuid = 'fb349b5f-8000-0080-0010-000000100000';
-  static const String _readUuid = 'fb349b5f-8000-0080-0010-000000001000';
+  // Service UUID — 0x180A little-endian 128-bit form
+  static const String _svcUuid = 'ed8ab937-571f-4dfd-a081-35b4f2243358';
+  // Write + Notify — same characteristic
   static const String _writeUuid = 'fb349b5f-8000-0080-0010-000000002000';
-  static const String _notifyUuid = 'fb349b5f-8000-0080-0010-000000003000';
 
   Future<T> _queue<T>(Future<T> Function() task) {
     final completer = Completer<T>();
@@ -63,37 +63,34 @@ class BleServiceWindows extends base.BleServiceBase {
   @override
   Stream<base.BleConnectionState> connectToDevice(String deviceId) {
     debugPrint("🔵 WinBLE connecting to $deviceId");
-    final controller = StreamController<base.BleConnectionState>.broadcast();
-    controller.add(base.BleConnectionState.connecting);
+    final ctrl = StreamController<base.BleConnectionState>.broadcast();
+    ctrl.add(base.BleConnectionState.connecting);
 
     WinBle.connectionStreamOf(deviceId).listen((connected) {
       debugPrint("WinBLE connection: $connected");
-      controller.add(connected
+      ctrl.add(connected
           ? base.BleConnectionState.connected
           : base.BleConnectionState.disconnected);
     });
 
     WinBle.connect(deviceId);
-    return controller.stream;
+    return ctrl.stream;
   }
 
   // ── Discover ─────────────────────────────────────────────────
   @override
   Future<void> discoverServices(String deviceId) async {
-    debugPrint("⏳ WinBLE: settling...");
+    debugPrint("⏳ WinBLE settling...");
     await Future.delayed(const Duration(milliseconds: 1500));
 
-    debugPrint("🔍 WinBLE: discovering services...");
     final services = await WinBle.discoverServices(deviceId);
     for (final s in services) {
       debugPrint("📡 SERVICE: $s");
       try {
         final chars = await WinBle.discoverCharacteristics(
-          address: deviceId,
-          serviceId: s,
-        );
+            address: deviceId, serviceId: s);
         for (final c in chars) {
-          debugPrint("   └─ CHAR: ${c.uuid}");
+          debugPrint("Characteristic: $c");
         }
       } catch (_) {}
     }
@@ -110,189 +107,175 @@ class BleServiceWindows extends base.BleServiceBase {
   @override
   Future<void> writeJson(String deviceId, Map<String, dynamic> json) {
     return _queue(() async {
-      final bytes = Uint8List.fromList(utf8.encode(jsonEncode(json)));
-      final total = bytes.length;
-      debugPrint("⬆️ WinBLE WRITE: $total bytes");
+      final bytes = utf8.encode(jsonEncode(json));
+      final packets = BleProtocol.buildPackets(
+        bytes,
+        selection: Selection.updateConfig,
+        format: DataFormat.json,
+      );
 
-      int offset = 0, idx = 0;
-      while (offset < total) {
-        final end = (offset + _writeChunkSize < total)
-            ? offset + _writeChunkSize
-            : total;
-        final chunk = Uint8List.fromList(bytes.sublist(offset, end));
+      debugPrint("⬆️ WinBLE WRITE ${bytes.length}B "
+          "→ ${packets.length} packet(s)");
 
+      for (int i = 0; i < packets.length; i++) {
         await WinBle.write(
           address: deviceId,
           service: _svcUuid,
           characteristic: _writeUuid,
-          data: chunk,
-          writeWithResponse: true,
+          data: packets[i],
+          writeWithResponse: false, // Company uses write-without-response
         );
-
-        debugPrint("✅ WinBLE chunk $idx ACK'd");
-        offset = end;
-        idx++;
-        if (offset < total) {
-          await Future.delayed(const Duration(milliseconds: 100));
+        debugPrint("✅ WinBLE packet ${i + 1}/${packets.length} ACK'd");
+        if (i < packets.length - 1) {
+          await Future.delayed(const Duration(milliseconds: 50));
         }
       }
-      debugPrint("✅ WinBLE WRITE COMPLETE — $idx chunks");
+      debugPrint("✅ WinBLE WRITE COMPLETE");
+    });
+  }
+
+  Future<void> writeTabJson(
+      String deviceId, Map<String, dynamic> json, int selection) {
+    return _queue(() async {
+      final bytes = utf8.encode(jsonEncode(json));
+      final packets = BleProtocol.buildPackets(
+        bytes,
+        selection: selection,
+        format: DataFormat.json,
+      );
+      debugPrint("⬆️ WinBLE WRITE tab sel=$selection ${bytes.length}B");
+      for (int i = 0; i < packets.length; i++) {
+        await WinBle.write(
+          address: deviceId,
+          service: _svcUuid,
+          characteristic: _writeUuid,
+          data: packets[i],
+          writeWithResponse: true,
+        );
+        debugPrint("✅ WinBLE packet ${i + 1} ACK'd");
+        if (i < packets.length - 1) {
+          await Future.delayed(const Duration(milliseconds: 50));
+        }
+      }
     });
   }
 
   // ── Send Command ─────────────────────────────────────────────
   @override
   Future<void> sendCommand(String deviceId, String command) {
-    return _queue(() async {
-      debugPrint("📤 WinBLE COMMAND: $command");
-      await WinBle.write(
-        address: deviceId,
-        service: _svcUuid,
-        characteristic: _writeUuid,
-        data: Uint8List.fromList(utf8.encode(command)),
-        writeWithResponse: true,
-      );
-      debugPrint("✅ WinBLE COMMAND ACK'd");
-    });
+    return writeJson(deviceId, {"command": command});
   }
 
   // ── Read JSON ────────────────────────────────────────────────
-  // HOW THIS WORKS:
-  // 1. Subscribe to notify characteristic
-  // 2. Write a single byte to the WRITE characteristic to trigger ESP
-  //    (ESP sees a write starting with non-'{' so it ignores it as JSON,
-  //     but we use a special trigger byte 0x01 that we handle in ESP)
-  //
-  // ACTUALLY: On our ESP, a READ on the read characteristic triggers notify.
-  // win_ble read() returns data directly — it doesn't trigger notify.
-  // So we use WinBle.read() to get the "OK" response, which also
-  // tells ESP to send notify. The notify arrives on characteristicValueStream.
   @override
   Future<Map<String, dynamic>> readJson(String deviceId) {
     return _queue(() async {
       final completer = Completer<Map<String, dynamic>>();
-      final buffer = StringBuffer();
+      final chunks = <int, List<int>>{};
+      int? totalChunks;
+      int? totalLength;
 
-      await _notifySubscription?.cancel();
-      _notifySubscription = null;
+      await _notifySub?.cancel();
+      _notifySub = null;
 
-      // Step 1: Subscribe to notify BEFORE triggering read
-      debugPrint("📥 WinBLE: subscribing to notify...");
+      // Subscribe to write characteristic (company uses same for notify)
+      debugPrint("Service UUID: $_svcUuid");
+      debugPrint("Write UUID: $_writeUuid");
+      debugPrint("📥 WinBLE subscribing to notify...");
       try {
         await WinBle.subscribeToCharacteristic(
           address: deviceId,
           serviceId: _svcUuid,
-          characteristicId: _notifyUuid,
+          characteristicId: _writeUuid,
         );
-        debugPrint("📥 WinBLE: subscribed to notify ✅");
+        debugPrint("📥 WinBLE subscribed ✅");
       } catch (e) {
-        debugPrint("❌ WinBLE subscribe error: $e");
+        debugPrint("⚠️ WinBLE subscribe: $e — continuing");
       }
 
-      // Step 2: Listen to all characteristic value events
-      _notifySubscription = WinBle.characteristicValueStream.listen((event) {
-        debugPrint("📡 RAW EVENT: $event");
-
+      _notifySub = WinBle.characteristicValueStream.listen((event) {
         final addr = (event["address"] ?? "").toString();
-        final charId = (event["characteristicId"] ??
-                event["characteristic"] ??
-                event["uuid"] ??
-                "")
-            .toString()
-            .toLowerCase();
-
-        debugPrint("📡 addr=$addr charId=$charId");
-
-        // Accept if address matches (case insensitive)
-        if (addr.toLowerCase() != deviceId.toLowerCase()) {
-          debugPrint("📡 skipping — address mismatch");
-          return;
-        }
-
-        // Accept if charId matches notify OR if charId is empty (some versions)
-        if (charId.isNotEmpty && charId != _notifyUuid) {
-          debugPrint("📡 skipping — char mismatch ($charId != $_notifyUuid)");
-          return;
-        }
+        if (addr.toLowerCase() != deviceId.toLowerCase()) return;
 
         final raw = event["value"];
         List<int> data = [];
-        if (raw is List) {
-          data = raw.cast<int>();
-        } else if (raw is Uint8List) {
-          data = raw.toList();
-        }
+        if (raw is List) data = raw.cast<int>();
+        if (raw is Uint8List) data = raw.toList();
+        if (data.isEmpty) return;
 
-        if (data.isEmpty) {
-          debugPrint("📡 skipping — empty data");
+        final packet = BleProtocol.parse(data);
+        if (packet == null) {
+          debugPrint("❌ WinBLE invalid packet");
           return;
         }
+        debugPrint("📥 WinBLE $packet");
 
-        final text = utf8.decode(data, allowMalformed: true);
-        debugPrint("📥 WinBLE CHUNK: $text");
-        buffer.write(text);
+        totalLength ??= packet.totalLength;
+        totalChunks ??= packet.totalChunks;
+        chunks[packet.chunkIndex] = packet.payload;
 
-        final received = buffer.toString();
-        if (received.contains("#END#") && received.contains("}")) {
-          String jsonText = received.replaceAll("#END#", "").trim();
-          final start = jsonText.indexOf('{');
-          final end = jsonText.lastIndexOf('}');
-          if (start >= 0 && end > start) {
-            jsonText = jsonText.substring(start, end + 1);
+        if (chunks.length == totalChunks) {
+          final assembled = <int>[];
+          for (int i = 1; i <= totalChunks!; i++) {
+            assembled.addAll(chunks[i] ?? []);
           }
-          jsonText = jsonText.replaceAll(RegExp(r',\s*}'), '}');
-          debugPrint("✅ WinBLE FINAL JSON: $jsonText");
+          final trimmed = assembled.length > totalLength!
+              ? assembled.sublist(0, totalLength!)
+              : assembled;
+
+          final jsonStr = utf8.decode(trimmed, allowMalformed: true);
+          debugPrint("✅ WinBLE JSON assembled (${trimmed.length}B)");
 
           if (!completer.isCompleted) {
             try {
-              completer.complete(jsonDecode(jsonText) as Map<String, dynamic>);
+              completer.complete(jsonDecode(jsonStr) as Map<String, dynamic>);
             } catch (e) {
-              debugPrint("❌ WinBLE PARSE FAILED: $e");
+              debugPrint("❌ WinBLE parse failed: $e");
               completer.complete({});
             }
           }
         }
       });
 
-      // Step 3: Wait for subscription to reach ESP
-      await Future.delayed(const Duration(milliseconds: 800));
+      await Future.delayed(const Duration(milliseconds: 600));
 
-      // Step 4: Trigger ESP to send notify by reading the read characteristic
-      // WinBle.read() sends a GATT Read Request → ESP receives READ_EVT
-      // → ESP sends "OK" response + triggers send_json_notify()
-      debugPrint("📤 WinBLE: triggering READ on $_readUuid...");
+      // Send REQUEST packet to trigger charger to send data
+      debugPrint("📤 WinBLE sending REQUEST packet...");
+      final requestPackets = BleProtocol.buildPackets(
+        [],
+        selection: Selection.request,
+        format: DataFormat.json,
+      );
       try {
-        final readResult = await WinBle.read(
+        await WinBle.write(
           address: deviceId,
-          serviceId: _svcUuid,
-          characteristicId: _readUuid,
+          service: _svcUuid,
+          characteristic: _writeUuid,
+          data: requestPackets[0],
+          writeWithResponse: false, // Company uses write-without-response
         );
-        debugPrint("📤 WinBLE read response: $readResult");
+        debugPrint("📤 WinBLE REQUEST sent");
       } catch (e) {
-        debugPrint("❌ WinBLE read trigger error: $e");
-        // Even if read fails, notify might still come
+        debugPrint("⚠️ WinBLE request: $e");
       }
 
-      debugPrint("⏳ WinBLE: waiting for notify chunks...");
-
-      // Step 5: Wait for all notify chunks
       final result = await completer.future.timeout(
         const Duration(seconds: 10),
         onTimeout: () {
-          debugPrint("⏰ WinBLE timeout — buffer: '${buffer.toString()}'");
+          debugPrint("⏰ WinBLE timeout — "
+              "${chunks.length}/${totalChunks ?? '?'} chunks");
           return {};
         },
       );
 
-      // Step 6: Clean up
-      await _notifySubscription?.cancel();
-      _notifySubscription = null;
+      await _notifySub?.cancel();
+      _notifySub = null;
 
       try {
         await WinBle.unSubscribeFromCharacteristic(
           address: deviceId,
           serviceId: _svcUuid,
-          characteristicId: _notifyUuid,
+          characteristicId: _writeUuid,
         );
       } catch (_) {}
 
@@ -300,15 +283,15 @@ class BleServiceWindows extends base.BleServiceBase {
     });
   }
 
-  // ── Clear / Disconnect ───────────────────────────────────────
+  // ── Disconnect ───────────────────────────────────────────────
   @override
   void clearGattState(String deviceId) => _gattReady.remove(deviceId);
 
   @override
   void disconnect(String deviceId) {
     debugPrint("🔌 WinBLE disconnecting $deviceId");
-    _notifySubscription?.cancel();
-    _notifySubscription = null;
+    _notifySub?.cancel();
+    _notifySub = null;
     clearGattState(deviceId);
     WinBle.disconnect(deviceId);
   }

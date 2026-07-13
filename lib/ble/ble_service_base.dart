@@ -25,7 +25,7 @@ abstract class BleServiceBase {
 
   // ── Write JSON ───────────────────────────────────────────────
   Future<void> writeJson(String deviceId, Map<String, dynamic> json);
-
+  Future<void> writeTabJson(String deviceId, Map<String, dynamic> json, int selection);
   // ── Send Command ─────────────────────────────────────────────
   Future<void> sendCommand(String deviceId, String command);
 

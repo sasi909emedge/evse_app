@@ -4,31 +4,31 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_reactive_ble/flutter_reactive_ble.dart';
 import '../config/evse_config.dart';
 import 'ble_service_base.dart';
+import 'ble_protocol.dart';
 
 // ================================================================
-// MOBILE BLE SERVICE (Android + iOS)
-// Uses flutter_reactive_ble
+// MOBILE BLE SERVICE — Android + iOS
+// Company protocol:
+//   - Single characteristic for write AND notify
+//   - 10-byte header, little-endian
+//   - Chunks 1-based
+//   - Read characteristic NOT used
 // ================================================================
 class BleServiceMobile extends BleServiceBase {
   BleServiceMobile._internal();
   static final BleServiceMobile instance = BleServiceMobile._internal();
 
   final FlutterReactiveBle _ble = FlutterReactiveBle();
-
   final Map<String, bool> _gattReady = {};
-  final Map<String, DateTime> _readyTime = {};
-
-  static const int _writeChunkSize = 180;
 
   Future<void> _operation = Future.value();
-  StreamSubscription<List<int>>? _notifySubscription;
+  StreamSubscription<List<int>>? _notifySub;
 
   Future<T> _queue<T>(Future<T> Function() task) {
     final completer = Completer<T>();
     _operation = _operation.then((_) async {
       try {
-        final result = await task();
-        completer.complete(result);
+        completer.complete(await task());
       } catch (e, s) {
         completer.completeError(e, s);
       }
@@ -38,16 +38,11 @@ class BleServiceMobile extends BleServiceBase {
 
   // ── Scan ────────────────────────────────────────────────────
   @override
-  Stream<BleDevice> scanDevices() {
-    return _ble.scanForDevices(
+  Stream<BleDevice> scanDevices() => _ble.scanForDevices(
       withServices: const [],
-      scanMode: ScanMode.lowLatency,
-    ).map((d) => BleDevice(
-          id: d.id,
-          name: d.name,
-          rssi: d.rssi,
-        ));
-  }
+      scanMode:
+          ScanMode.lowLatency).map(
+      (d) => BleDevice(id: d.id, name: d.name, rssi: d.rssi));
 
   // ── Connect ─────────────────────────────────────────────────
   @override
@@ -55,11 +50,9 @@ class BleServiceMobile extends BleServiceBase {
     debugPrint("🔵 Connecting to $deviceId");
     return _ble
         .connectToDevice(
-      id: deviceId,
-      connectionTimeout: const Duration(seconds: 15),
-    )
-        .map((update) {
-      switch (update.connectionState) {
+            id: deviceId, connectionTimeout: const Duration(seconds: 15))
+        .map((u) {
+      switch (u.connectionState) {
         case DeviceConnectionState.connecting:
           return BleConnectionState.connecting;
         case DeviceConnectionState.connected:
@@ -75,12 +68,10 @@ class BleServiceMobile extends BleServiceBase {
   // ── Discover ─────────────────────────────────────────────────
   @override
   Future<void> discoverServices(String deviceId) async {
-    debugPrint("⏳ Waiting for ESP GATT to settle...");
+    debugPrint("⏳ Settling...");
     await Future.delayed(const Duration(milliseconds: 1500));
 
-    debugPrint("🔍 Discovering services...");
     await _ble.discoverAllServices(deviceId);
-
     final services = await _ble.getDiscoveredServices(deviceId);
     for (final s in services) {
       debugPrint("📡 SERVICE: ${s.id}");
@@ -90,152 +81,193 @@ class BleServiceMobile extends BleServiceBase {
     }
 
     try {
-      await _ble.requestMtu(deviceId: deviceId, mtu: 247);
-      debugPrint("✅ MTU negotiated");
+      // 515 = 512 packet + 3 ATT overhead
+      await _ble.requestMtu(deviceId: deviceId, mtu: 515);
+      debugPrint("✅ MTU negotiated to 515");
     } catch (_) {
-      debugPrint("⚠️ MTU failed, using default");
+      debugPrint("⚠️ MTU failed — using default");
     }
 
     await Future.delayed(const Duration(milliseconds: 500));
-
     _gattReady[deviceId] = true;
-    _readyTime[deviceId] = DateTime.now();
     debugPrint("✅ GATT READY");
   }
 
   @override
   bool isGattReady(String deviceId) => _gattReady[deviceId] == true;
 
-  // ── Write JSON ───────────────────────────────────────────────
-  @override
-  Future<void> writeJson(String deviceId, Map<String, dynamic> json) {
-    return _queue(() async {
-      final characteristic = QualifiedCharacteristic(
-        serviceId: EVSEConfig.writeServiceUuid,
+  // ── Write characteristic (used for both write AND notify) ────
+  QualifiedCharacteristic _writeChar(String deviceId) =>
+      QualifiedCharacteristic(
+        serviceId: EVSEConfig.serviceUuid,
         characteristicId: EVSEConfig.writeCharUuid,
         deviceId: deviceId,
       );
 
+  // ── Write JSON ───────────────────────────────────────────────
+  @override
+  Future<void> writeJson(String deviceId, Map<String, dynamic> json) {
+    return _queue(() async {
       final bytes = utf8.encode(jsonEncode(json));
-      final total = bytes.length;
-      debugPrint("⬆️ WRITE: ${bytes.length} bytes");
+      final packets = BleProtocol.buildPackets(
+        bytes,
+        selection: Selection.updateConfig,
+        format: DataFormat.json,
+      );
 
-      int offset = 0, idx = 0;
-      while (offset < total) {
-        final end = (offset + _writeChunkSize < total)
-            ? offset + _writeChunkSize
-            : total;
-        final chunk = bytes.sublist(offset, end);
+      debugPrint("⬆️ WRITE ${bytes.length}B → ${packets.length} packet(s)");
 
-        await _ble.writeCharacteristicWithResponse(characteristic,
-            value: chunk);
-
-        debugPrint("✅ Chunk $idx ACK'd");
-        offset = end;
-        idx++;
-
-        if (offset < total) {
-          await Future.delayed(const Duration(milliseconds: 100));
+      for (int i = 0; i < packets.length; i++) {
+        await _ble.writeCharacteristicWithResponse(_writeChar(deviceId),
+            value: packets[i]);
+        debugPrint("✅ Packet ${i + 1}/${packets.length} ACK'd "
+            "(${packets[i].length}B)");
+        if (i < packets.length - 1) {
+          await Future.delayed(const Duration(milliseconds: 50));
         }
       }
-      debugPrint("✅ WRITE COMPLETE — $idx chunks");
+      debugPrint("✅ WRITE COMPLETE");
+    });
+  }
+
+  Future<void> writeTabJson(
+      String deviceId, Map<String, dynamic> json, int selection) {
+    return _queue(() async {
+      final bytes = utf8.encode(jsonEncode(json));
+      final packets = BleProtocol.buildPackets(
+        bytes,
+        selection: selection,
+        format: DataFormat.json,
+      );
+      debugPrint(
+          "⬆️ WRITE tab sel=$selection ${bytes.length}B → ${packets.length} packet(s)");
+      for (int i = 0; i < packets.length; i++) {
+        await _ble.writeCharacteristicWithResponse(_writeChar(deviceId),
+            value: packets[i]);
+        debugPrint("✅ Packet ${i + 1}/${packets.length} ACK'd");
+        if (i < packets.length - 1) {
+          await Future.delayed(const Duration(milliseconds: 50));
+        }
+      }
+      debugPrint("✅ WRITE COMPLETE");
     });
   }
 
   // ── Send Command ─────────────────────────────────────────────
   @override
   Future<void> sendCommand(String deviceId, String command) {
-    return _queue(() async {
-      final characteristic = QualifiedCharacteristic(
-        serviceId: EVSEConfig.writeServiceUuid,
-        characteristicId: EVSEConfig.writeCharUuid,
-        deviceId: deviceId,
-      );
-      debugPrint("📤 COMMAND: $command");
-      await _ble.writeCharacteristicWithResponse(
-        characteristic,
-        value: utf8.encode(command),
-      );
-      debugPrint("✅ COMMAND ACK'd");
-    });
+    return writeJson(deviceId, {"command": command});
   }
 
   // ── Read JSON ────────────────────────────────────────────────
+  // Company uses SAME write characteristic for notify
+  // We subscribe to write char notify, then send a REQUEST packet
+  // to trigger charger to send data back via notify
   @override
   Future<Map<String, dynamic>> readJson(String deviceId) {
     return _queue(() async {
       final completer = Completer<Map<String, dynamic>>();
-      final buffer = StringBuffer();
+      // chunks map: key = chunkIndex (1-based), value = payload bytes
+      final chunks = <int, List<int>>{};
+      int? totalChunks;
+      int? totalLength;
 
+      // Notify char = same as write char (company spec)
       final notifyChar = QualifiedCharacteristic(
         deviceId: deviceId,
         serviceId: EVSEConfig.serviceUuid,
         characteristicId: EVSEConfig.notifyCharUuid,
       );
-      final readChar = QualifiedCharacteristic(
-        deviceId: deviceId,
-        serviceId: EVSEConfig.serviceUuid,
-        characteristicId: EVSEConfig.readCharUuid,
-      );
 
-      await _notifySubscription?.cancel();
-      _notifySubscription = null;
+      await _notifySub?.cancel();
+      _notifySub = null;
 
-      _notifySubscription =
-          _ble.subscribeToCharacteristic(notifyChar).listen((data) {
-        final text = utf8.decode(data);
-        debugPrint("📥 CHUNK: $text");
-        buffer.write(text);
-
-        final received = buffer.toString();
-        if (received.contains("#END#") && received.contains("}")) {
-          String jsonText = received.replaceAll("#END#", "").trim();
-          final start = jsonText.indexOf('{');
-          final end = jsonText.lastIndexOf('}');
-          if (start >= 0 && end > start) {
-            jsonText = jsonText.substring(start, end + 1);
+      // Subscribe to notify BEFORE sending request
+      _notifySub = _ble.subscribeToCharacteristic(notifyChar).listen(
+        (raw) {
+          final packet = BleProtocol.parse(raw);
+          if (packet == null) {
+            debugPrint("❌ Invalid packet (${raw.length}B)");
+            return;
           }
-          jsonText = jsonText.replaceAll(RegExp(r',\s*}'), '}');
+          debugPrint("📥 $packet");
 
-          if (!completer.isCompleted) {
-            try {
-              completer.complete(jsonDecode(jsonText) as Map<String, dynamic>);
-            } catch (e) {
-              debugPrint("❌ PARSE FAILED: $e");
-              completer.complete({});
+          totalLength ??= packet.totalLength;
+          totalChunks ??= packet.totalChunks;
+
+          // Store by 1-based chunk index
+          chunks[packet.chunkIndex] = packet.payload;
+
+          // Done when we have all chunks
+          if (chunks.length == totalChunks) {
+            final assembled = <int>[];
+            // Assemble in order 1..totalChunks
+            for (int i = 1; i <= totalChunks!; i++) {
+              assembled.addAll(chunks[i] ?? []);
+            }
+            // Trim to declared total length
+            final trimmed = assembled.length > totalLength!
+                ? assembled.sublist(0, totalLength!)
+                : assembled;
+
+            final jsonStr = utf8.decode(trimmed, allowMalformed: true);
+            debugPrint("✅ JSON assembled "
+                "(${trimmed.length}B / $totalChunks chunk(s))");
+
+            if (!completer.isCompleted) {
+              try {
+                completer.complete(jsonDecode(jsonStr) as Map<String, dynamic>);
+              } catch (e) {
+                debugPrint("❌ JSON parse failed: $e");
+                completer.complete({});
+              }
             }
           }
-        }
-      }, onError: (e) {
-        if (!completer.isCompleted) completer.complete({});
-      });
-
-      await Future.delayed(const Duration(milliseconds: 600));
-      await _ble.readCharacteristic(readChar);
-
-      final result = await completer.future.timeout(
-        const Duration(seconds: 8),
-        onTimeout: () => {},
+        },
+        onError: (e) {
+          debugPrint("❌ Notify error: $e");
+          if (!completer.isCompleted) completer.complete({});
+        },
       );
 
-      await _notifySubscription?.cancel();
-      _notifySubscription = null;
+      // Wait for subscription to activate
+      await Future.delayed(const Duration(milliseconds: 600));
+
+      // Send REQUEST packet to trigger charger to send data
+      debugPrint("📤 Sending REQUEST packet...");
+      final requestPackets = BleProtocol.buildPackets(
+        [],
+        selection: Selection.request,
+        format: DataFormat.json,
+      );
+      await _ble.writeCharacteristicWithResponse(_writeChar(deviceId),
+          value: requestPackets[0]);
+      debugPrint("📤 REQUEST sent — waiting for notify chunks...");
+
+      final result = await completer.future.timeout(
+        const Duration(seconds: 10),
+        onTimeout: () {
+          debugPrint("⏰ Timeout — "
+              "${chunks.length}/${totalChunks ?? '?'} chunks received");
+          return {};
+        },
+      );
+
+      await _notifySub?.cancel();
+      _notifySub = null;
       return result;
     });
   }
 
-  // ── Clear / Disconnect ───────────────────────────────────────
+  // ── Disconnect ───────────────────────────────────────────────
   @override
-  void clearGattState(String deviceId) {
-    _gattReady.remove(deviceId);
-    _readyTime.remove(deviceId);
-  }
+  void clearGattState(String deviceId) => _gattReady.remove(deviceId);
 
   @override
   void disconnect(String deviceId) {
     debugPrint("🔌 Disconnecting $deviceId");
-    _notifySubscription?.cancel();
-    _notifySubscription = null;
+    _notifySub?.cancel();
+    _notifySub = null;
     clearGattState(deviceId);
   }
 }
