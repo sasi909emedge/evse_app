@@ -56,14 +56,19 @@ class _HomeScreenState extends State<HomeScreen> {
             child:
                 Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
               Container(
-                width: 52,
-                height: 52,
+                width: 64,
+                height: 64,
+                padding: const EdgeInsets.all(6),
                 decoration: BoxDecoration(
-                  color: Colors.white.withOpacity(0.2),
-                  borderRadius: BorderRadius.circular(14),
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(16),
                 ),
-                child: const Icon(Icons.bolt_rounded,
-                    color: Colors.white, size: 28),
+                child: Image.asset(
+                  'assets/icon/emc_icon.png',
+                  fit: BoxFit.contain,
+                  errorBuilder: (_, __, ___) => const Icon(Icons.bolt_rounded,
+                      color: AppColors.primary, size: 28),
+                ),
               ),
               const SizedBox(height: 14),
               const Text("EMEDGE",

@@ -133,10 +133,10 @@ class MeterData {
   });
 
   factory MeterData.fromMap(Map<String, dynamic> m) => MeterData(
-        moduleAddress: _parseHexAddress(m["Address"]),
+        moduleAddress: m["Address"] as int? ?? 0,
         registerCount: m["RegisterCount"] as int? ?? 1,
-        dataType: _reverseLookup(_meterDataTypeTokens, m["DataType"], 0),
-        wordOrder: _reverseLookup(_meterWordOrderTokens, m["WordOrder"], 0),
+        dataType: m["DataType"] as int? ?? 0,
+        wordOrder: m["WordOrder"] as int? ?? 0,
         scaleExponent: m["ScaleExponent"] as int? ?? 0,
       );
 }
@@ -355,21 +355,40 @@ class _EvseDetailsScreenState extends State<EvseDetailsScreen>
     'Yada DCM3366D-J2',
     'User Defined',
   ];
-  static const Map<String, String> _legacyAcMeterTypeMap = {
-    'EM4M': 'Selec EM4M',
-    'EMEDGE1234': 'User Defined',
+  final Map<String, int> acMeterTypeEnum = {
+    'User Defined': 0,
+    'Selec EM4M': 1,
+    'Selec MFM384': 2,
+    'Elmeasure M30': 3,
+    'Elmeasure LG2XX0D': 4,
+    'Rishabh 3430': 5,
+    'Havells SDM630': 6,
   };
-  static const Map<String, String> _legacyDcMeterTypeMap = {
-    'EM2M': 'Selec EM2M',
-    'DCIVYEM619002': 'IVY DC EM619002',
+  final Map<String, int> dcMeterTypeEnum = {
+    'User Defined': 0,
+    'Rishabh EM6000': 1,
+    'Rishabh EM6001': 2,
+    'Selec EM2M': 3,
+    'Elmeasure EDC2150D': 4,
+    'Elecnova PD195Z-CD31F': 5,
+    'Elecnova PD195Z-CD32F': 6,
+    'Pilot DCMSPM90': 7,
+    'IVY DC EM619002': 8,
+    'Yada DCM3366D-J2': 9,
   };
 
-  String _normalizeMeterType(
-      String? raw, List<String> validOptions, Map<String, String> legacyMap) {
-    if (raw == null) return 'User Defined';
-    if (validOptions.contains(raw)) return raw;
-    if (legacyMap.containsKey(raw) && validOptions.contains(legacyMap[raw])) {
-      return legacyMap[raw]!;
+  String _acMeterTypeFromEnum(dynamic raw) {
+    final v = raw is int ? raw : int.tryParse(raw?.toString() ?? '') ?? 0;
+    for (final e in acMeterTypeEnum.entries) {
+      if (e.value == v) return e.key;
+    }
+    return 'User Defined';
+  }
+
+  String _dcMeterTypeFromEnum(dynamic raw) {
+    final v = raw is int ? raw : int.tryParse(raw?.toString() ?? '') ?? 0;
+    for (final e in dcMeterTypeEnum.entries) {
+      if (e.value == v) return e.key;
     }
     return 'User Defined';
   }
@@ -442,8 +461,7 @@ class _EvseDetailsScreenState extends State<EvseDetailsScreen>
     overTempCtrl.text = d["overTemperatureThreshold"]?.toString() ?? "";
     // Parse AC meter channels
     final acM = d["acMeter"] as Map<String, dynamic>? ?? {};
-    acMeterType = _normalizeMeterType(
-        acM["meterType"]?.toString(), acMeterOptions, _legacyAcMeterTypeMap);
+    acMeterType = _acMeterTypeFromEnum(acM["meterType"]);
     acV1N = MeterData.fromMap(acM["VoltageV1N"] as Map<String, dynamic>? ?? {});
     acV2N = MeterData.fromMap(acM["VoltageV2N"] as Map<String, dynamic>? ?? {});
     acV3N = MeterData.fromMap(acM["VoltageV3N"] as Map<String, dynamic>? ?? {});
@@ -466,8 +484,7 @@ class _EvseDetailsScreenState extends State<EvseDetailsScreen>
 
 // Parse DC meter 1
     final dc1M = d["dcMeter1"] as Map<String, dynamic>? ?? {};
-    dcMeter1Type = _normalizeMeterType(
-        dc1M["meterType"]?.toString(), dcMeterOptions, _legacyDcMeterTypeMap);
+    dcMeter1Type = _dcMeterTypeFromEnum(dc1M["meterType"]);
     dc1Voltage =
         MeterData.fromMap(dc1M["Voltage"] as Map<String, dynamic>? ?? {});
     dc1Current =
@@ -478,8 +495,7 @@ class _EvseDetailsScreenState extends State<EvseDetailsScreen>
 
 // Parse DC meter 2
     final dc2M = d["dcMeter2"] as Map<String, dynamic>? ?? {};
-    dcMeter2Type = _normalizeMeterType(
-        dc2M["meterType"]?.toString(), dcMeterOptions, _legacyDcMeterTypeMap);
+    dcMeter2Type = _dcMeterTypeFromEnum(dc2M["meterType"]);
     dc2Voltage =
         MeterData.fromMap(dc2M["Voltage"] as Map<String, dynamic>? ?? {});
     dc2Current =
@@ -489,9 +505,8 @@ class _EvseDetailsScreenState extends State<EvseDetailsScreen>
         MeterData.fromMap(dc2M["Energy"] as Map<String, dynamic>? ?? {});
 
 // Parse power modules
-    final pmList = d["powerModules"] as List<dynamic>? ?? [];
-    for (int i = 0; i < pmList.length && i < 8; i++) {
-      final pm = pmList[i] as Map<String, dynamic>? ?? {};
+    for (int i = 0; i < 8; i++) {
+      final pm = d["PowerModule${i + 1}"] as Map<String, dynamic>? ?? {};
       pmAvailable[i] = _bool(pm["isAvailable"]);
       pmAddressCtrl[i].text = pm["moduleAddress"]?.toString() ?? "";
       pmMaxVoltCtrl[i].text = pm["MaxVoltage"]?.toString() ?? "";
@@ -756,79 +771,69 @@ class _EvseDetailsScreenState extends State<EvseDetailsScreen>
       };
 
   Map<String, dynamic> _buildPowerModuleMap() => {
-        "powerModules": List.generate(
-            8,
-            (i) => {
-                  "index": i + 1,
-                  "isAvailable": pmAvailable[i],
-                  "moduleAddress":
-                      int.tryParse(pmAddressCtrl[i].text.trim()) ?? 0,
-                  "MaxVoltage":
-                      double.tryParse(pmMaxVoltCtrl[i].text.trim()) ?? 0.0,
-                  "MaxCurrent":
-                      double.tryParse(pmMaxCurrCtrl[i].text.trim()) ?? 0.0,
-                  "MinVoltage":
-                      double.tryParse(pmMinVoltCtrl[i].text.trim()) ?? 0.0,
-                  "MinCurrent":
-                      double.tryParse(pmMinCurrCtrl[i].text.trim()) ?? 0.0,
-                  "MaxPower":
-                      double.tryParse(pmMaxPowerCtrl[i].text.trim()) ?? 0.0,
-                  "MinPower":
-                      double.tryParse(pmMinPowerCtrl[i].text.trim()) ?? 0.0,
-                  "MaxTemperature":
-                      double.tryParse(pmMaxTempCtrl[i].text.trim()) ?? 0.0,
-                  "MinTemperature":
-                      double.tryParse(pmMinTempCtrl[i].text.trim()) ?? 0.0,
-                }),
+        for (int i = 0; i < 8; i++)
+          "PowerModule${i + 1}": {
+            "isAvailable": pmAvailable[i],
+            "moduleAddress": int.tryParse(pmAddressCtrl[i].text.trim()) ?? 0,
+            "MaxVoltage": double.tryParse(pmMaxVoltCtrl[i].text.trim()) ?? 0.0,
+            "MaxCurrent": double.tryParse(pmMaxCurrCtrl[i].text.trim()) ?? 0.0,
+            "MinVoltage": double.tryParse(pmMinVoltCtrl[i].text.trim()) ?? 0.0,
+            "MinCurrent": double.tryParse(pmMinCurrCtrl[i].text.trim()) ?? 0.0,
+            "MaxPower": double.tryParse(pmMaxPowerCtrl[i].text.trim()) ?? 0.0,
+            "MinPower": double.tryParse(pmMinPowerCtrl[i].text.trim()) ?? 0.0,
+            "MaxTemperature":
+                double.tryParse(pmMaxTempCtrl[i].text.trim()) ?? 0.0,
+            "MinTemperature":
+                double.tryParse(pmMinTempCtrl[i].text.trim()) ?? 0.0,
+          },
       };
 
   Map<String, dynamic> _buildMeterMap() => {
         "acMeter": {
-          "meterType": acMeterType,
+          "meterType": acMeterTypeEnum[acMeterType] ?? 0,
           "OffsetAddress": acOffsetAddr,
-          "VoltageV1N": _meterDataMap("VoltageV1N", acV1N),
-          "VoltageV2N": _meterDataMap("VoltageV2N", acV2N),
-          "VoltageV3N": _meterDataMap("VoltageV3N", acV3N),
-          "VoltageV12": _meterDataMap("VoltageV12", acV12),
-          "VoltageV23": _meterDataMap("VoltageV23", acV23),
-          "VoltageV31": _meterDataMap("VoltageV31", acV31),
-          "CurrentI1": _meterDataMap("CurrentI1", acI1),
-          "CurrentI2": _meterDataMap("CurrentI2", acI2),
-          "CurrentI3": _meterDataMap("CurrentI3", acI3),
-          "TotalKW": _meterDataMap("TotalKW", acTotalKW),
-          "AveragePF": _meterDataMap("AveragePF", acAvgPF),
-          "TotalKWh": _meterDataMap("TotalKWh", acTotalKWh),
-          "CumulativeKWh": _meterDataMap("CumulativeKWh", acCumKWh),
-          "ResetCumulativeKWh":
-              _meterDataMap("ResetCumulativeKWh", acResetCumKWh),
+          "VoltageV1N": _meterDataMap(1, acV1N),
+          "VoltageV2N": _meterDataMap(1, acV2N),
+          "VoltageV3N": _meterDataMap(1, acV3N),
+          "VoltageV12": _meterDataMap(1, acV12),
+          "VoltageV23": _meterDataMap(1, acV23),
+          "VoltageV31": _meterDataMap(1, acV31),
+          "CurrentI1": _meterDataMap(2, acI1),
+          "CurrentI2": _meterDataMap(2, acI2),
+          "CurrentI3": _meterDataMap(2, acI3),
+          "TotalKW": _meterDataMap(3, acTotalKW),
+          "AveragePF":
+              _meterDataMap(3, acAvgPF), // ⚠ confirm category with company
+          "TotalKWh": _meterDataMap(4, acTotalKWh),
+          "CumulativeKWh": _meterDataMap(4, acCumKWh),
+          "ResetCumulativeKWh": _meterDataMap(4, acResetCumKWh),
         },
         "dcMeter1": {
-          "meterType": dcMeter1Type,
+          "meterType": dcMeterTypeEnum[dcMeter1Type] ?? 0,
           "assignedGun": 1,
           "OffsetAddress": dc1OffsetAddr,
-          "Voltage": _meterDataMap("Voltage", dc1Voltage),
-          "Current": _meterDataMap("Current", dc1Current),
-          "Power": _meterDataMap("Power", dc1Power),
-          "Energy": _meterDataMap("Energy", dc1Energy),
+          "Voltage": _meterDataMap(1, dc1Voltage),
+          "Current": _meterDataMap(2, dc1Current),
+          "Power": _meterDataMap(3, dc1Power),
+          "Energy": _meterDataMap(4, dc1Energy),
         },
         "dcMeter2": {
-          "meterType": dcMeter2Type,
+          "meterType": dcMeterTypeEnum[dcMeter2Type] ?? 0,
           "assignedGun": 2,
           "OffsetAddress": dc2OffsetAddr,
-          "Voltage": _meterDataMap("Voltage", dc2Voltage),
-          "Current": _meterDataMap("Current", dc2Current),
-          "Power": _meterDataMap("Power", dc2Power),
-          "Energy": _meterDataMap("Energy", dc2Energy),
+          "Voltage": _meterDataMap(1, dc2Voltage),
+          "Current": _meterDataMap(2, dc2Current),
+          "Power": _meterDataMap(3, dc2Power),
+          "Energy": _meterDataMap(4, dc2Energy),
         },
       };
 
-  Map<String, dynamic> _meterDataMap(String paramName, MeterData m) => {
-        "ParamName": paramName,
-        "Address":
-            "0x${m.moduleAddress.toRadixString(16).padLeft(4, '0').toUpperCase()}",
+  Map<String, dynamic> _meterDataMap(int paramValue, MeterData m) => {
+        "Param": paramValue,
+        "Address": m.moduleAddress,
         "RegisterCount": m.registerCount,
-        "DataType": dataTypes[m.dataType] ?? "UINT16",
-        "WordOrder": wordOrders[m.wordOrder] ?? "AB",
+        "DataType": m.dataType,
+        "WordOrder": m.wordOrder,
         "ScaleExponent": m.scaleExponent,
       };
 
@@ -2092,113 +2097,33 @@ class _EvseDetailsScreenState extends State<EvseDetailsScreen>
                   fontWeight: FontWeight.w600,
                   color: AppColors.primary)),
           const SizedBox(height: 8),
-          _miniIntField(
-              "M.Addr",
-              data.moduleAddress,
-              ro
-                  ? (_) {}
-                  : (v) {
-                      setState(() {
-                        data.moduleAddress = v;
-                      });
-                      _markMeterChanged();
-                    }),
-          _miniIntField(
-              "Reg.Count",
-              data.registerCount,
-              ro
-                  ? (_) {}
-                  : (v) {
-                      setState(() {
-                        data.registerCount = v;
-                      });
-                      _markMeterChanged();
-                    }),
-          _miniDropEdit<int>(
-            "DataType",
-            data.dataType,
-            dataTypes,
-            ro
-                ? (_) {}
-                : (v) {
-                    setState(() {
-                      data.dataType = v;
-                    });
-                    _markMeterChanged();
-                  },
-          ),
-          _miniDropEdit<int>(
-            "W.Order",
-            data.wordOrder,
-            wordOrders,
-            ro
-                ? (_) {}
-                : (v) {
-                    setState(() {
-                      data.wordOrder = v;
-                    });
-                    _markMeterChanged();
-                  },
-          ),
-          _miniIntField(
-              "Exp",
-              data.scaleExponent,
-              ro
-                  ? (_) {}
-                  : (v) {
-                      setState(() {
-                        data.scaleExponent = v;
-                      });
-                      _markMeterChanged();
-                    }),
+          _miniIntField("M.Addr", data.moduleAddress, (v) {
+            setState(() => data.moduleAddress = v);
+            _markMeterChanged();
+          }, readOnly: ro),
+          _miniIntField("Reg.Count", data.registerCount, (v) {
+            setState(() => data.registerCount = v);
+            _markMeterChanged();
+          }, readOnly: ro),
+          _miniDropEdit<int>("DataType", data.dataType, dataTypes, (v) {
+            setState(() => data.dataType = v);
+            _markMeterChanged();
+          }, readOnly: ro),
+          _miniDropEdit<int>("W.Order", data.wordOrder, wordOrders, (v) {
+            setState(() => data.wordOrder = v);
+            _markMeterChanged();
+          }, readOnly: ro),
+          _miniIntField("Exp", data.scaleExponent, (v) {
+            setState(() => data.scaleExponent = v);
+            _markMeterChanged();
+          }, readOnly: ro),
         ]),
       ),
     );
   }
 
-  Widget _miniDropEdit<T>(String label, T value, Map<T, String> opts,
-          ValueChanged<T> onChanged) =>
-      Padding(
-        padding: const EdgeInsets.symmetric(vertical: 3),
-        child: Row(children: [
-          SizedBox(
-              width: 72,
-              child: Text(label,
-                  style: TextStyle(fontSize: 11, color: _textSecondary))),
-          Expanded(
-            child: Container(
-              height: 32,
-              padding: const EdgeInsets.symmetric(horizontal: 8),
-              decoration: BoxDecoration(
-                color: _surface,
-                borderRadius: BorderRadius.circular(8),
-                border: Border.all(color: _border),
-              ),
-              child: DropdownButtonHideUnderline(
-                child: DropdownButton<T>(
-                  value: value,
-                  isExpanded: true,
-                  isDense: true,
-                  dropdownColor: _surface,
-                  style: TextStyle(fontSize: 12, color: _textPrimary),
-                  items: opts.entries
-                      .map((e) => DropdownMenuItem(
-                          value: e.key,
-                          child: Text(e.value,
-                              style: TextStyle(
-                                  fontSize: 12, color: _textPrimary))))
-                      .toList(),
-                  onChanged: (v) {
-                    if (v != null) onChanged(v);
-                  },
-                ),
-              ),
-            ),
-          ),
-        ]),
-      );
-
-  Widget _miniIntField(String label, int value, ValueChanged<int> onChanged) {
+  Widget _miniIntField(String label, int value, ValueChanged<int> onChanged,
+      {bool readOnly = false}) {
     final ctrl = TextEditingController(text: value.toString());
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 3),
@@ -2213,16 +2138,23 @@ class _EvseDetailsScreenState extends State<EvseDetailsScreen>
             child: TextField(
               controller: ctrl,
               keyboardType: TextInputType.number,
+              readOnly: readOnly,
               scrollPadding: const EdgeInsets.only(bottom: 400),
-              style: TextStyle(fontSize: 12, color: _textPrimary),
-              onChanged: (v) {
-                final n = int.tryParse(v);
-                if (n != null) onChanged(n);
-              },
+              style: TextStyle(
+                  fontSize: 12,
+                  color: readOnly ? _textSecondary : _textPrimary),
+              onChanged: readOnly
+                  ? null
+                  : (v) {
+                      final n = int.tryParse(v);
+                      if (n != null) onChanged(n);
+                    },
               decoration: InputDecoration(
                 isDense: true,
                 filled: true,
-                fillColor: _surface,
+                fillColor: readOnly
+                    ? (_isDark ? AppColors.borderDark : AppColors.borderStrong)
+                    : _surface,
                 contentPadding:
                     const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
                 border: OutlineInputBorder(
@@ -2233,8 +2165,12 @@ class _EvseDetailsScreenState extends State<EvseDetailsScreen>
                     borderSide: BorderSide(color: _border)),
                 focusedBorder: OutlineInputBorder(
                     borderRadius: BorderRadius.circular(8),
-                    borderSide:
-                        const BorderSide(color: AppColors.primary, width: 1.5)),
+                    borderSide: BorderSide(
+                        color: readOnly ? _border : AppColors.primary,
+                        width: 1.5)),
+                suffixIcon: readOnly
+                    ? Icon(Icons.lock_outline, size: 14, color: _textSecondary)
+                    : null,
               ),
             ),
           ),
@@ -2278,6 +2214,55 @@ class _EvseDetailsScreenState extends State<EvseDetailsScreen>
                       borderRadius: BorderRadius.circular(8),
                       borderSide: const BorderSide(
                           color: AppColors.primary, width: 1.5)),
+                ),
+              ),
+            ),
+          ),
+        ]),
+      );
+
+  Widget _miniDropEdit<T>(
+          String label, T value, Map<T, String> opts, ValueChanged<T> onChanged,
+          {bool readOnly = false}) =>
+      Padding(
+        padding: const EdgeInsets.symmetric(vertical: 3),
+        child: Row(children: [
+          SizedBox(
+              width: 72,
+              child: Text(label,
+                  style: TextStyle(fontSize: 11, color: _textSecondary))),
+          Expanded(
+            child: Container(
+              height: 32,
+              padding: const EdgeInsets.symmetric(horizontal: 8),
+              decoration: BoxDecoration(
+                color: readOnly
+                    ? (_isDark ? AppColors.borderDark : AppColors.borderStrong)
+                    : _surface,
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: _border),
+              ),
+              child: DropdownButtonHideUnderline(
+                child: DropdownButton<T>(
+                  value: value,
+                  isExpanded: true,
+                  isDense: true,
+                  dropdownColor: _surface,
+                  style: TextStyle(
+                      fontSize: 12,
+                      color: readOnly ? _textSecondary : _textPrimary),
+                  items: opts.entries
+                      .map((e) => DropdownMenuItem(
+                          value: e.key,
+                          child: Text(e.value,
+                              style: TextStyle(
+                                  fontSize: 12, color: _textPrimary))))
+                      .toList(),
+                  onChanged: readOnly
+                      ? null
+                      : (v) {
+                          if (v != null) onChanged(v);
+                        },
                 ),
               ),
             ),
@@ -2343,12 +2328,12 @@ class _EvseDetailsScreenState extends State<EvseDetailsScreen>
           else
             _dropRow("Meter Type", dcMeter1Type),
           if (_editMode)
-            _intField("Offset Address", acOffsetAddr, (v) {
-              acOffsetAddr = v;
+            _intField("Offset Address", dc1OffsetAddr, (v) {
+              dc1OffsetAddr = v;
               _markMeterChanged();
-            }, readOnly: !isUserAC)
+            }, readOnly: !isUserDC1)
           else
-            _row("Offset Address", acOffsetAddr.toString()),
+            _row("Offset Address", dc1OffsetAddr.toString()),
           _row("Assigned Gun", "1"),
           _meterChannel("Voltage", dc1Voltage, readOnly: !isUserDC1),
           _meterChannel("Current", dc1Current, readOnly: !isUserDC1),
@@ -2370,12 +2355,12 @@ class _EvseDetailsScreenState extends State<EvseDetailsScreen>
           else
             _dropRow("Meter Type", dcMeter2Type),
           if (_editMode)
-            _intField("Offset Address", acOffsetAddr, (v) {
-              acOffsetAddr = v;
+            _intField("Offset Address", dc2OffsetAddr, (v) {
+              dc2OffsetAddr = v;
               _markMeterChanged();
-            }, readOnly: !isUserAC)
+            }, readOnly: !isUserDC2)
           else
-            _row("Offset Address", acOffsetAddr.toString()),
+            _row("Offset Address", dc2OffsetAddr.toString()),
           _row("Assigned Gun", "2"),
           _meterChannel("Voltage", dc2Voltage, readOnly: !isUserDC2),
           _meterChannel("Current", dc2Current, readOnly: !isUserDC2),
