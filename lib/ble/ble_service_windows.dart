@@ -170,15 +170,28 @@ class BleServiceWindows extends base.BleServiceBase {
   @override
   Future<Map<String, dynamic>> readJson(String deviceId) {
     return _queue(() async {
+      final mergedResult = <String, dynamic>{};
       final completer = Completer<Map<String, dynamic>>();
-      final chunks = <int, List<int>>{};
+
+      var chunks = <int, List<int>>{};
       int? totalChunks;
       int? totalLength;
+
+      Timer? quietTimer;
+      void resetQuietTimer() {
+        quietTimer?.cancel();
+        quietTimer = Timer(const Duration(milliseconds: 1500), () {
+          if (!completer.isCompleted) {
+            debugPrint(
+                "✅ WinBLE no more blobs — finishing with keys: ${mergedResult.keys.toList()}");
+            completer.complete(mergedResult);
+          }
+        });
+      }
 
       await _notifySub?.cancel();
       _notifySub = null;
 
-      // Subscribe to write characteristic (company uses same for notify)
       debugPrint("Service UUID: $_svcUuid");
       debugPrint("Write UUID: $_writeUuid");
       debugPrint("📥 WinBLE subscribing to notify...");
@@ -208,38 +221,50 @@ class BleServiceWindows extends base.BleServiceBase {
           debugPrint("❌ WinBLE invalid packet");
           return;
         }
-        debugPrint("📥 WinBLE $packet");
 
-        totalLength ??= packet.totalLength;
-        totalChunks ??= packet.totalChunks;
+        // Starting a fresh blob, or header disagrees with what we're
+        // currently tracking — (re)start clean.
+        if (chunks.isEmpty || packet.totalChunks != totalChunks) {
+          chunks = {};
+          totalLength = packet.totalLength;
+          totalChunks = packet.totalChunks;
+        }
+
+        debugPrint("📥 WinBLE $packet");
         chunks[packet.chunkIndex] = packet.payload;
+        resetQuietTimer();
 
         if (chunks.length == totalChunks) {
           final assembled = <int>[];
           for (int i = 1; i <= totalChunks!; i++) {
             assembled.addAll(chunks[i] ?? []);
           }
-          final trimmed = assembled.length > totalLength!
+          final trimmed = assembled.length > (totalLength ?? 0)
               ? assembled.sublist(0, totalLength!)
               : assembled;
 
           final jsonStr = utf8.decode(trimmed, allowMalformed: true);
-          debugPrint("✅ WinBLE JSON assembled (${trimmed.length}B)");
+          debugPrint(
+              "✅ WinBLE blob assembled (${trimmed.length}B / $totalChunks chunk(s))");
 
-          if (!completer.isCompleted) {
-            try {
-              completer.complete(jsonDecode(jsonStr) as Map<String, dynamic>);
-            } catch (e) {
-              debugPrint("❌ WinBLE parse failed: $e");
-              completer.complete({});
-            }
+          try {
+            final decoded = jsonDecode(jsonStr) as Map<String, dynamic>;
+            mergedResult.addAll(decoded);
+            debugPrint(
+                "🔗 WinBLE merged keys so far: ${mergedResult.keys.toList()}");
+          } catch (e) {
+            debugPrint("❌ WinBLE blob parse failed: $e");
           }
+
+          // Reset — ready for the next blob (meter, then PM, etc.)
+          chunks = {};
+          totalChunks = null;
+          totalLength = null;
         }
       });
 
       await Future.delayed(const Duration(milliseconds: 600));
 
-      // Send REQUEST packet to trigger charger to send data
       debugPrint("📤 WinBLE sending REQUEST packet...");
       final requestPackets = BleProtocol.buildPackets(
         [],
@@ -260,10 +285,118 @@ class BleServiceWindows extends base.BleServiceBase {
       }
 
       final result = await completer.future.timeout(
+        const Duration(seconds: 15),
+        onTimeout: () {
+          debugPrint(
+              "⏰ WinBLE overall timeout — returning ${mergedResult.length} keys collected so far");
+          return mergedResult;
+        },
+      );
+
+      quietTimer?.cancel();
+      await _notifySub?.cancel();
+      _notifySub = null;
+
+      try {
+        await WinBle.unSubscribeFromCharacteristic(
+          address: deviceId,
+          serviceId: _svcUuid,
+          characteristicId: _writeUuid,
+        );
+      } catch (_) {}
+
+      return result;
+    });
+  }
+
+  // ── Targeted Read — request ONE specific section only ─────────
+  @override
+  Future<Map<String, dynamic>> readJsonForSelection(
+      String deviceId, int selection) {
+    return _queue(() async {
+      final completer = Completer<Map<String, dynamic>>();
+      final chunks = <int, List<int>>{};
+      int? totalChunks;
+      int? totalLength;
+
+      await _notifySub?.cancel();
+      _notifySub = null;
+
+      try {
+        await WinBle.subscribeToCharacteristic(
+          address: deviceId,
+          serviceId: _svcUuid,
+          characteristicId: _writeUuid,
+        );
+      } catch (e) {
+        debugPrint("⚠️ WinBLE targeted subscribe: $e — continuing");
+      }
+
+      _notifySub = WinBle.characteristicValueStream.listen((event) {
+        final addr = (event["address"] ?? "").toString();
+        if (addr.toLowerCase() != deviceId.toLowerCase()) return;
+
+        final raw = event["value"];
+        List<int> data = [];
+        if (raw is List) data = raw.cast<int>();
+        if (raw is Uint8List) data = raw.toList();
+        if (data.isEmpty) return;
+
+        final packet = BleProtocol.parse(data);
+        if (packet == null) return;
+
+        if (chunks.isEmpty || packet.totalChunks != totalChunks) {
+          totalLength = packet.totalLength;
+          totalChunks = packet.totalChunks;
+        }
+        chunks[packet.chunkIndex] = packet.payload;
+        debugPrint("📥 WinBLE targeted $packet");
+
+        if (chunks.length == totalChunks) {
+          final assembled = <int>[];
+          for (int i = 1; i <= totalChunks!; i++) {
+            assembled.addAll(chunks[i] ?? []);
+          }
+          final trimmed = assembled.length > (totalLength ?? 0)
+              ? assembled.sublist(0, totalLength!)
+              : assembled;
+          final jsonStr = utf8.decode(trimmed, allowMalformed: true);
+          debugPrint("✅ WinBLE targeted read assembled (${trimmed.length}B)");
+          if (!completer.isCompleted) {
+            try {
+              completer.complete(jsonDecode(jsonStr) as Map<String, dynamic>);
+            } catch (e) {
+              debugPrint("❌ WinBLE targeted parse failed: $e");
+              completer.complete({});
+            }
+          }
+        }
+      });
+
+      await Future.delayed(const Duration(milliseconds: 600));
+
+      debugPrint("📤 WinBLE targeted REQUEST (selection=$selection)...");
+      final requestPackets = BleProtocol.buildPackets(
+        [],
+        selection: selection,
+        format: DataFormat.json,
+      );
+      try {
+        await WinBle.write(
+          address: deviceId,
+          service: _svcUuid,
+          characteristic: _writeUuid,
+          data: requestPackets[0],
+          writeWithResponse: false,
+        );
+      } catch (e) {
+        debugPrint("⚠️ WinBLE targeted request: $e");
+      }
+
+      final result = await completer.future.timeout(
         const Duration(seconds: 10),
         onTimeout: () {
-          debugPrint("⏰ WinBLE timeout — "
-              "${chunks.length}/${totalChunks ?? '?'} chunks");
+          debugPrint("⏰ WinBLE targeted timeout (selection=$selection)");
           return {};
         },
       );

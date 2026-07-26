@@ -132,13 +132,17 @@ class MeterData {
     this.offsetAddress = 0,
   });
 
-  factory MeterData.fromMap(Map<String, dynamic> m) => MeterData(
-        moduleAddress: m["Address"] as int? ?? 0,
-        registerCount: m["RegisterCount"] as int? ?? 1,
-        dataType: m["DataType"] as int? ?? 0,
-        wordOrder: m["WordOrder"] as int? ?? 0,
-        scaleExponent: m["ScaleExponent"] as int? ?? 0,
-      );
+  factory MeterData.fromMap(Map<String, dynamic> m) {
+    final rawDataType = m["DataType"] as int? ?? 0;
+    final rawWordOrder = m["WordOrder"] as int? ?? 0;
+    return MeterData(
+      moduleAddress: m["Address"] as int? ?? 0,
+      registerCount: m["RegisterCount"] as int? ?? 1,
+      dataType: (rawDataType >= 0 && rawDataType <= 7) ? rawDataType : 0,
+      wordOrder: (rawWordOrder >= 0 && rawWordOrder <= 5) ? rawWordOrder : 0,
+      scaleExponent: m["ScaleExponent"] as int? ?? 0,
+    );
+  }
 }
 
 class EvseDetailsScreen extends StatefulWidget {
@@ -159,8 +163,10 @@ class _EvseDetailsScreenState extends State<EvseDetailsScreen>
   // ── TAB 1: Charger ───────────────────────────────────────────
   bool defaultConfig = false;
   int chargerType = 1;
-  int chargerModel = 1;
-  int boardModel = 1;
+  int masterBoardModel = 1;
+  int dispenserBoardModel = 1;
+  int displayBoardModel = 1;
+  int relayBoardModel = 1;
   final serialCtrl = TextEditingController();
   final chargerNameCtrl = TextEditingController();
   final vendorCtrl = TextEditingController();
@@ -169,10 +175,7 @@ class _EvseDetailsScreenState extends State<EvseDetailsScreen>
   final commissionedDateCtrl = TextEditingController();
   final firmwareVersionCtrl = TextEditingController();
   final slaveFirmwareVersionCtrl = TextEditingController();
-  int chargingMode = 1;
   bool smartCharging = false;
-  bool batteryBackup = false;
-  bool resumeSession = false;
   bool restoreFromFault = false;
   final restoreTimeCtrl = TextEditingController();
 
@@ -287,9 +290,11 @@ class _EvseDetailsScreenState extends State<EvseDetailsScreen>
   bool _configDirty = false;
   bool _meterDirty = false;
   bool _powerModuleDirty = false;
+  bool _connectorDirty = false;
   Map<String, dynamic> _originalConfig = {};
   Map<String, dynamic> _originalMeter = {};
   Map<String, dynamic> _originalPowerModule = {};
+  Map<String, dynamic> _originalConnector = {};
   late TabController _tabCtrl;
 
   // ── Maps ─────────────────────────────────────────────────────
@@ -298,17 +303,7 @@ class _EvseDetailsScreenState extends State<EvseDetailsScreen>
     2: "DISPENSER",
     3: "STACK"
   };
-  final Map<int, String> chargerModels = {
-    1: "DC30S",
-    2: "DC60S",
-    3: "DC120S",
-    4: "DC180S",
-    5: "DC240S",
-    6: "DC60D",
-    7: "DC120D"
-  };
-  final Map<int, String> boardModels = {1: "DC1", 2: "DC2", 3: "DC3"};
-  final Map<int, String> chargingModes = {1: "DC", 2: "DC_AC"};
+  final Map<int, String> boardModelOptions = {1: "V1", 2: "V2", 3: "V3"};
   final Map<int, String> networkModes = {
     0: "ONLINE",
     1: "OFFLINE",
@@ -412,22 +407,20 @@ class _EvseDetailsScreenState extends State<EvseDetailsScreen>
   // ── Apply Data ────────────────────────────────────────────────
   void _applyData(Map<String, dynamic> d) {
     defaultConfig = _bool(d["defaultConfig"]);
-    chargerType = _mapEnum(chargerTypes, d["chargerType"], 1);
-    chargerModel = _mapEnum(chargerModels, d["chargerModel"], 1);
-    boardModel = _mapEnum(boardModels, d["boardModel"], 1);
+    chargerType = _mapEnum(chargerTypes, d["ChargerType"], 1);
+    masterBoardModel = _clampBoardModel(d["masterBoardModel"]);
+    dispenserBoardModel = _clampBoardModel(d["dispenserBoardModel"]);
+    displayBoardModel = _clampBoardModel(d["displayBoardModel"]);
+    relayBoardModel = _clampBoardModel(d["relayBoardModel"]);
     serialCtrl.text = d["serialNumber"]?.toString() ?? "";
     chargerNameCtrl.text = d["chargerName"]?.toString() ?? "";
     vendorCtrl.text = d["chargePointVendor"]?.toString() ?? "";
     modelCtrl.text = d["chargePointModel"]?.toString() ?? "";
-    commissionedByCtrl.text =
-        d["commissionedBy"]?.toString() ?? widget.loggedInUser;
-    commissionedDateCtrl.text = d["commissionedDate"]?.toString() ?? _today();
+    commissionedByCtrl.text = widget.loggedInUser;
+    commissionedDateCtrl.text = _today();
     firmwareVersionCtrl.text = d["firmwareVersion"]?.toString() ?? "";
     slaveFirmwareVersionCtrl.text = d["slavefirmwareVersion"]?.toString() ?? "";
-    chargingMode = _mapEnum(chargingModes, d["chargingMode"], 1);
     smartCharging = _bool(d["smartCharging"]);
-    batteryBackup = _bool(d["BatteryBackup"]);
-    resumeSession = _bool(d["ResumeSessionAfterPowerLoss"]);
     restoreFromFault = _bool(d["restoreSessionFromFault"]);
     restoreTimeCtrl.text = d["restoreSessionFromFaultTime"]?.toString() ?? "";
     networkMode = _mapEnum(networkModes, d["networkMode"], 0);
@@ -548,11 +541,13 @@ class _EvseDetailsScreenState extends State<EvseDetailsScreen>
     _originalMeter = Map<String, dynamic>.from(_currentMeterSnapshot());
     _originalPowerModule =
         Map<String, dynamic>.from(_currentPowerModuleSnapshot());
+    _originalConnector = Map<String, dynamic>.from(_buildConnectorMap());
 
 // Freshly loaded data is not dirty
     _configDirty = false;
     _meterDirty = false;
     _powerModuleDirty = false;
+    _connectorDirty = false;
   }
 
   bool _bool(dynamic v) {
@@ -566,10 +561,16 @@ class _EvseDetailsScreenState extends State<EvseDetailsScreen>
   void _updateDirtyFlags() {
     _configDirty = !_mapsEqual(_currentConfigSnapshot(), _originalConfig);
 
-    _meterDirty = !_mapsEqual(_currentMeterSnapshot(), _originalMeter);
+    final currentMeter = _currentMeterSnapshot();
+    _meterDirty = !_mapsEqual(currentMeter, _originalMeter);
+    if (_meterDirty) {
+      _debugDiff("METER", _originalMeter, currentMeter);
+    }
 
     _powerModuleDirty =
         !_mapsEqual(_currentPowerModuleSnapshot(), _originalPowerModule);
+
+    _connectorDirty = !_mapsEqual(_buildConnectorMap(), _originalConnector);
   }
 
   void _markConfigChanged() {
@@ -591,11 +592,65 @@ class _EvseDetailsScreenState extends State<EvseDetailsScreen>
     return jsonEncode(a) == jsonEncode(b);
   }
 
+  void _debugDiff(
+      String label, Map<String, dynamic> a, Map<String, dynamic> b) {
+    final allKeys = {...a.keys, ...b.keys};
+    for (final k in allKeys) {
+      if (jsonEncode(a[k]) != jsonEncode(b[k])) {
+        debugPrint("🔍 $label diff on '$k':");
+        debugPrint("    original: ${jsonEncode(a[k])}");
+        debugPrint("    current : ${jsonEncode(b[k])}");
+      }
+    }
+  }
+
+  bool _verifyContains(
+      Map<String, dynamic> readback, Map<String, dynamic> expectedSubset) {
+    bool allMatch = true;
+    for (final key in expectedSubset.keys) {
+      if (!_valuesMatch(expectedSubset[key], readback[key])) {
+        debugPrint(
+            "⚠️ Mismatch on '$key': sent=${jsonEncode(expectedSubset[key])} "
+            "charger=${jsonEncode(readback[key])}");
+        allMatch = false;
+      }
+    }
+    return allMatch;
+  }
+
+  int? _enumStringToInt(String s) {
+    for (final map in [chargerTypes, networkModes, ethernetTypes]) {
+      for (final e in map.entries) {
+        if (e.value == s) return e.key;
+      }
+    }
+    return null;
+  }
+
+  bool _valuesMatch(dynamic sent, dynamic got) {
+    // Numeric formatting differences (60.0 vs 60)
+    if (sent is num && got is num) {
+      return (sent.toDouble() - got.toDouble()).abs() < 0.0001;
+    }
+    // Enum sent as string label, charger echoed back as raw int (or vice versa)
+    if (sent is String && got is num) {
+      final asInt = _enumStringToInt(sent);
+      if (asInt != null) return asInt == got;
+    }
+    if (sent is num && got is String) {
+      final asInt = _enumStringToInt(got);
+      if (asInt != null) return asInt == sent;
+    }
+    // Everything else — exact structural match (maps, lists, bools, plain strings)
+    return jsonEncode(sent) == jsonEncode(got);
+  }
+
   void _restoreOriginalValues() {
     final all = {
       ..._originalConfig,
       ..._originalMeter,
       ..._originalPowerModule,
+      ..._originalConnector,
     };
 
     _applyData(all);
@@ -604,6 +659,7 @@ class _EvseDetailsScreenState extends State<EvseDetailsScreen>
       _configDirty = false;
       _meterDirty = false;
       _powerModuleDirty = false;
+      _connectorDirty = false;
       _editMode = false;
     });
   }
@@ -617,11 +673,18 @@ class _EvseDetailsScreenState extends State<EvseDetailsScreen>
     return fallback;
   }
 
+  int _clampBoardModel(dynamic raw) {
+    final v = raw is int ? raw : int.tryParse(raw?.toString() ?? '') ?? 1;
+    return (v >= 1 && v <= 3) ? v : 1;
+  }
+
   Map<String, dynamic> _buildSaveMap() => {
         "defaultConfig": defaultConfig,
-        "chargerType": chargerTypes[chargerType],
-        "chargerModel": chargerModels[chargerModel],
-        "boardModel": boardModels[boardModel],
+        "ChargerType": chargerTypes[chargerType],
+        "masterBoardModel": masterBoardModel,
+        "dispenserBoardModel": dispenserBoardModel,
+        "displayBoardModel": displayBoardModel,
+        "relayBoardModel": relayBoardModel,
         "serialNumber": serialCtrl.text.trim(),
         "chargerName": chargerNameCtrl.text.trim(),
         "chargePointVendor": vendorCtrl.text.trim(),
@@ -630,10 +693,7 @@ class _EvseDetailsScreenState extends State<EvseDetailsScreen>
         "commissionedDate": _today(),
         "firmwareVersion": firmwareVersionCtrl.text.trim(),
         "slavefirmwareVersion": slaveFirmwareVersionCtrl.text.trim(),
-        "chargingMode": chargingModes[chargingMode],
         "smartCharging": smartCharging,
-        "BatteryBackup": batteryBackup,
-        "ResumeSessionAfterPowerLoss": resumeSession,
         "restoreSessionFromFault": restoreFromFault,
         "restoreSessionFromFaultTime":
             int.tryParse(restoreTimeCtrl.text.trim()) ?? 0,
@@ -710,19 +770,18 @@ class _EvseDetailsScreenState extends State<EvseDetailsScreen>
       };
   Map<String, dynamic> _buildChargerMap() => {
         "defaultConfig": defaultConfig,
-        "chargerType": chargerTypes[chargerType],
-        "chargerModel": chargerModels[chargerModel],
-        "boardModel": boardModels[boardModel],
+        "ChargerType": chargerTypes[chargerType],
+        "masterBoardModel": masterBoardModel,
+        "dispenserBoardModel": dispenserBoardModel,
+        "displayBoardModel": displayBoardModel,
+        "relayBoardModel": relayBoardModel,
         "serialNumber": serialCtrl.text.trim(),
         "chargerName": chargerNameCtrl.text.trim(),
         "chargePointVendor": vendorCtrl.text.trim(),
         "chargePointModel": modelCtrl.text.trim(),
         "commissionedBy": widget.loggedInUser,
         "commissionedDate": _today(),
-        "chargingMode": chargingModes[chargingMode],
         "smartCharging": smartCharging,
-        "BatteryBackup": batteryBackup,
-        "ResumeSessionAfterPowerLoss": resumeSession,
         "restoreSessionFromFault": restoreFromFault,
         "restoreSessionFromFaultTime":
             int.tryParse(restoreTimeCtrl.text.trim()) ?? 0,
@@ -752,8 +811,10 @@ class _EvseDetailsScreenState extends State<EvseDetailsScreen>
 
   Map<String, dynamic> _buildHardwareMap() => {
         "NumberOfDisplays": int.tryParse(displaysCtrl.text.trim()) ?? 1,
+      };
+
+  Map<String, dynamic> _buildConnectorMap() => {
         "NumberOfConnectors": int.tryParse(connectorsCtrl.text.trim()) ?? 1,
-        "NumberOfPowerModules": int.tryParse(powerModulesCtrl.text.trim()) ?? 1,
         "DCoverVoltageThreshold":
             double.tryParse(dcOverVoltCtrl.text.trim()) ?? 0.0,
         "ACoverVoltageThreshold":
@@ -769,8 +830,9 @@ class _EvseDetailsScreenState extends State<EvseDetailsScreen>
         "overTemperatureThreshold":
             double.tryParse(overTempCtrl.text.trim()) ?? 0.0,
       };
-
+      
   Map<String, dynamic> _buildPowerModuleMap() => {
+        "NumberOfPowerModules": int.tryParse(powerModulesCtrl.text.trim()) ?? 1,
         for (int i = 0; i < 8; i++)
           "PowerModule${i + 1}": {
             "isAvailable": pmAvailable[i],
@@ -788,45 +850,55 @@ class _EvseDetailsScreenState extends State<EvseDetailsScreen>
           },
       };
 
-  Map<String, dynamic> _buildMeterMap() => {
-        "acMeter": {
-          "meterType": acMeterTypeEnum[acMeterType] ?? 0,
-          "OffsetAddress": acOffsetAddr,
-          "VoltageV1N": _meterDataMap(1, acV1N),
-          "VoltageV2N": _meterDataMap(1, acV2N),
-          "VoltageV3N": _meterDataMap(1, acV3N),
-          "VoltageV12": _meterDataMap(1, acV12),
-          "VoltageV23": _meterDataMap(1, acV23),
-          "VoltageV31": _meterDataMap(1, acV31),
-          "CurrentI1": _meterDataMap(2, acI1),
-          "CurrentI2": _meterDataMap(2, acI2),
-          "CurrentI3": _meterDataMap(2, acI3),
-          "TotalKW": _meterDataMap(3, acTotalKW),
-          "AveragePF":
-              _meterDataMap(3, acAvgPF), // ⚠ confirm category with company
-          "TotalKWh": _meterDataMap(4, acTotalKWh),
-          "CumulativeKWh": _meterDataMap(4, acCumKWh),
-          "ResetCumulativeKWh": _meterDataMap(4, acResetCumKWh),
-        },
-        "dcMeter1": {
-          "meterType": dcMeterTypeEnum[dcMeter1Type] ?? 0,
-          "assignedGun": 1,
-          "OffsetAddress": dc1OffsetAddr,
-          "Voltage": _meterDataMap(1, dc1Voltage),
-          "Current": _meterDataMap(2, dc1Current),
-          "Power": _meterDataMap(3, dc1Power),
-          "Energy": _meterDataMap(4, dc1Energy),
-        },
-        "dcMeter2": {
-          "meterType": dcMeterTypeEnum[dcMeter2Type] ?? 0,
-          "assignedGun": 2,
-          "OffsetAddress": dc2OffsetAddr,
-          "Voltage": _meterDataMap(1, dc2Voltage),
-          "Current": _meterDataMap(2, dc2Current),
-          "Power": _meterDataMap(3, dc2Power),
-          "Energy": _meterDataMap(4, dc2Energy),
-        },
+  Map<String, dynamic> _buildMeterMap() {
+    final connectors = _connectorCount;
+    final map = <String, dynamic>{
+      "acMeter": {
+        "meterType": acMeterTypeEnum[acMeterType] ?? 0,
+        "OffsetAddress": acOffsetAddr,
+        "VoltageV1N": _meterDataMap(1, acV1N),
+        "VoltageV2N": _meterDataMap(1, acV2N),
+        "VoltageV3N": _meterDataMap(1, acV3N),
+        "VoltageV12": _meterDataMap(1, acV12),
+        "VoltageV23": _meterDataMap(1, acV23),
+        "VoltageV31": _meterDataMap(1, acV31),
+        "CurrentI1": _meterDataMap(2, acI1),
+        "CurrentI2": _meterDataMap(2, acI2),
+        "CurrentI3": _meterDataMap(2, acI3),
+        "TotalKW": _meterDataMap(3, acTotalKW),
+        "AveragePF": _meterDataMap(3, acAvgPF),
+        "TotalKWh": _meterDataMap(4, acTotalKWh),
+        "CumulativeKWh": _meterDataMap(4, acCumKWh),
+        "ResetCumulativeKWh": _meterDataMap(4, acResetCumKWh),
+      },
+    };
+
+    if (connectors >= 1) {
+      map["dcMeter1"] = {
+        "meterType": dcMeterTypeEnum[dcMeter1Type] ?? 0,
+        "assignedGun": 1,
+        "OffsetAddress": dc1OffsetAddr,
+        "Voltage": _meterDataMap(1, dc1Voltage),
+        "Current": _meterDataMap(2, dc1Current),
+        "Power": _meterDataMap(3, dc1Power),
+        "Energy": _meterDataMap(4, dc1Energy),
       };
+    }
+
+    if (connectors >= 2) {
+      map["dcMeter2"] = {
+        "meterType": dcMeterTypeEnum[dcMeter2Type] ?? 0,
+        "assignedGun": 2,
+        "OffsetAddress": dc2OffsetAddr,
+        "Voltage": _meterDataMap(1, dc2Voltage),
+        "Current": _meterDataMap(2, dc2Current),
+        "Power": _meterDataMap(3, dc2Power),
+        "Energy": _meterDataMap(4, dc2Energy),
+      };
+    }
+
+    return map;
+  }
 
   Map<String, dynamic> _meterDataMap(int paramValue, MeterData m) => {
         "Param": paramValue,
@@ -1051,99 +1123,153 @@ class _EvseDetailsScreenState extends State<EvseDetailsScreen>
 
     _updateDirtyFlags();
 
-    if (!_configDirty && !_meterDirty && !_powerModuleDirty) {
-      if (mounted) {
-        _snack("No changes to save.", ok: true);
-      }
+    if (!_configDirty &&
+        !_meterDirty &&
+        !_powerModuleDirty &&
+        !_connectorDirty) {
+      if (mounted) _snack("No changes to save.", ok: true);
       return;
     }
 
     setState(() => _saving = true);
+    bool anyFailed = false;
 
     try {
+      // ----------------------------------------------------
+      // CONFIG
+      // ----------------------------------------------------
       if (_configDirty) {
-        final chargerData = _buildChargerMap();
-        final networkData = _buildNetworkMap();
-        final hardwareData = _buildHardwareMap();
-        final otaData = _buildOtaMap();
-
         final configJson = {
-          ...chargerData,
-          ...networkData,
-          ...hardwareData,
-          ...otaData,
+          ..._buildChargerMap(),
+          ..._buildNetworkMap(),
+          ..._buildHardwareMap(),
+          ..._buildOtaMap(),
         };
+        await BleService.instance
+            .writeTabJson(widget.deviceId, configJson, Selection.updateConfig);
+        await Future.delayed(const Duration(milliseconds: 500));
 
+        final readback = await BleService.instance
+            .readJsonForSelection(widget.deviceId, Selection.requestConfig);
+
+        // defaultConfig is a one-shot "load factory defaults" trigger —
+        // the charger clears it back to false after processing, so it
+        // will never echo back true. Exclude it from verification.
+        final verifyTarget = Map<String, dynamic>.from(configJson)
+          ..remove("defaultConfig");
+
+        final ok =
+            readback.isNotEmpty && _verifyContains(readback, verifyTarget);
+
+        if (ok) {
+          _originalConfig = Map<String, dynamic>.from(_currentConfigSnapshot());
+          _configDirty = false;
+        } else {
+          anyFailed = true;
+          if (mounted) {
+            _snack(
+                "Charger did not confirm the configuration update — please try Save again.",
+                ok: false);
+          }
+        }
+      }
+
+      // ----------------------------------------------------
+      // CONNECTOR
+      // ----------------------------------------------------
+      if (_connectorDirty) {
+        final connectorJson = _buildConnectorMap();
         await BleService.instance.writeTabJson(
-          widget.deviceId,
-          configJson,
-          Selection.updateConfig,
-        );
-        await Future.delayed(const Duration(milliseconds: 300));
+            widget.deviceId, connectorJson, Selection.updateConnectorConfig);
+        await Future.delayed(const Duration(milliseconds: 500));
+
+        final readback = await BleService.instance.readJsonForSelection(
+            widget.deviceId, Selection.requestConnectorConfig);
+        final ok =
+            readback.isNotEmpty && _verifyContains(readback, connectorJson);
+
+        if (ok) {
+          _originalConnector = Map<String, dynamic>.from(connectorJson);
+          _connectorDirty = false;
+        } else {
+          anyFailed = true;
+          if (mounted) {
+            _snack(
+                "Charger did not confirm the connector update — please try Save again.",
+                ok: false);
+          }
+        }
       }
 
       // ----------------------------------------------------
       // METERS
       // ----------------------------------------------------
-
       if (_meterDirty) {
+        final meterJson = _buildMeterMap();
         await BleService.instance.writeTabJson(
-          widget.deviceId,
-          _buildMeterMap(),
-          Selection.updateMeterConfig,
-        );
-        await Future.delayed(const Duration(milliseconds: 300));
+            widget.deviceId, meterJson, Selection.updateMeterConfig);
+        await Future.delayed(const Duration(milliseconds: 800));
+
+        final readback = await BleService.instance.readJsonForSelection(
+            widget.deviceId, Selection.requestMeterConfig);
+        final ok = readback.isNotEmpty && _verifyContains(readback, meterJson);
+
+        if (ok) {
+          _originalMeter = Map<String, dynamic>.from(_currentMeterSnapshot());
+          _meterDirty = false;
+        } else {
+          anyFailed = true;
+          if (mounted) {
+            _snack(
+                "Charger did not confirm the meter update — please try Save again.",
+                ok: false);
+          }
+        }
       }
 
       // ----------------------------------------------------
       // POWER MODULES
       // ----------------------------------------------------
-
       if (_powerModuleDirty) {
-        await BleService.instance.writeTabJson(
-          widget.deviceId,
-          _buildPowerModuleMap(),
-          Selection.updatePowerModule,
-        );
-        await Future.delayed(const Duration(milliseconds: 300));
+        final pmJson = _buildPowerModuleMap();
+        await BleService.instance
+            .writeTabJson(widget.deviceId, pmJson, Selection.updatePowerModule);
+        await Future.delayed(const Duration(milliseconds: 500));
+
+        final readback = await BleService.instance.readJsonForSelection(
+            widget.deviceId, Selection.requestPowerModuleConfig);
+        final ok = readback.isNotEmpty && _verifyContains(readback, pmJson);
+
+        if (ok) {
+          _originalPowerModule =
+              Map<String, dynamic>.from(_currentPowerModuleSnapshot());
+          _powerModuleDirty = false;
+        } else {
+          anyFailed = true;
+          if (mounted) {
+            _snack(
+                "Charger did not confirm the power module update — please try Save again.",
+                ok: false);
+          }
+        }
       }
 
-      //-----------------------------------------------------
-      // LOCAL SAVE
-      //-----------------------------------------------------
-
-      final allData = {
-        ..._currentConfigSnapshot(),
-        ..._currentMeterSnapshot(),
-        ..._currentPowerModuleSnapshot(),
-      };
-
-      await _saveLocally(allData);
-
-      //-----------------------------------------------------
-      // UPDATE SNAPSHOT
-      //-----------------------------------------------------
-
-      _originalConfig = Map<String, dynamic>.from(_currentConfigSnapshot());
-
-      _originalMeter = Map<String, dynamic>.from(_currentMeterSnapshot());
-
-      _originalPowerModule =
-          Map<String, dynamic>.from(_currentPowerModuleSnapshot());
-
-      _configDirty = false;
-      _meterDirty = false;
-      _powerModuleDirty = false;
-
-      if (mounted) {
-        _snack("Configuration Saved", ok: true);
+      // ----------------------------------------------------
+      // LOCAL SAVE + FINAL MESSAGE — only if everything verified
+      // ----------------------------------------------------
+      if (!anyFailed) {
+        final allData = {
+          ..._currentConfigSnapshot(),
+          ..._currentMeterSnapshot(),
+          ..._currentPowerModuleSnapshot(),
+          ..._buildConnectorMap(),
+        };
+        await _saveLocally(allData);
+        if (mounted) _snack("Configuration Saved", ok: true);
       }
     } catch (e) {
       debugPrint(e.toString());
-
-      if (mounted) {
-        _snack("Save Failed", ok: false);
-      }
+      if (mounted) _snack("Update failed — please retry", ok: false);
     } finally {
       if (mounted) {
         setState(() => _saving = false);
@@ -1784,10 +1910,14 @@ class _EvseDetailsScreenState extends State<EvseDetailsScreen>
           _checkEdit("Default Config", defaultConfig, (v) => defaultConfig = v),
           _dropEdit("Charger Type", chargerType, chargerTypes,
               (v) => chargerType = v),
-          _dropEdit("Charger Model", chargerModel, chargerModels,
-              (v) => chargerModel = v),
-          _dropEdit(
-              "Board Model", boardModel, boardModels, (v) => boardModel = v),
+          _dropEdit("Master Board Model", masterBoardModel, boardModelOptions,
+              (v) => masterBoardModel = v),
+          _dropEdit("Dispenser Board Model", dispenserBoardModel,
+              boardModelOptions, (v) => dispenserBoardModel = v),
+          _dropEdit("Display Board Model", displayBoardModel, boardModelOptions,
+              (v) => displayBoardModel = v),
+          _dropEdit("Relay Board Model", relayBoardModel, boardModelOptions,
+              (v) => relayBoardModel = v),
           _field("Serial Number", serialCtrl),
           _field("Charger Name", chargerNameCtrl),
           _field("Charge Point Vendor", vendorCtrl),
@@ -1798,12 +1928,7 @@ class _EvseDetailsScreenState extends State<EvseDetailsScreen>
           _field("Slave Firmware Version", slaveFirmwareVersionCtrl,
               readOnly: true),
           _section("Charging Configuration"),
-          _dropEdit("Charging Mode", chargingMode, chargingModes,
-              (v) => chargingMode = v),
           _checkEdit("Smart Charging", smartCharging, (v) => smartCharging = v),
-          _checkEdit("Battery Backup", batteryBackup, (v) => batteryBackup = v),
-          _checkEdit("Resume Session After Power Loss", resumeSession,
-              (v) => resumeSession = v),
           _checkEdit("Restore Session From Fault", restoreFromFault,
               (v) => restoreFromFault = v),
           _field("Restore Fault Time (sec)", restoreTimeCtrl,
@@ -1814,9 +1939,12 @@ class _EvseDetailsScreenState extends State<EvseDetailsScreen>
     return ListView(children: [
       _section("Device Information"),
       _boolRow("Default Config", defaultConfig),
-      _dropRow("Charger Type", chargerTypes[chargerType] ?? ""),
-      _dropRow("Charger Model", chargerModels[chargerModel] ?? ""),
-      _dropRow("Board Model", boardModels[boardModel] ?? ""),
+      _row("Charger Type", chargerTypes[chargerType] ?? ""),
+      _row("Master Board Model", boardModelOptions[masterBoardModel] ?? ""),
+      _row("Dispenser Board Model",
+          boardModelOptions[dispenserBoardModel] ?? ""),
+      _row("Display Board Model", boardModelOptions[displayBoardModel] ?? ""),
+      _row("Relay Board Model", boardModelOptions[relayBoardModel] ?? ""),
       _row("Serial Number", serialCtrl.text),
       _row("Charger Name", chargerNameCtrl.text),
       _row("Charge Point Vendor", vendorCtrl.text),
@@ -1826,10 +1954,7 @@ class _EvseDetailsScreenState extends State<EvseDetailsScreen>
       _row("Firmware Version", firmwareVersionCtrl.text),
       _row("Slave Firmware Version", slaveFirmwareVersionCtrl.text),
       _section("Charging Configuration"),
-      _dropRow("Charging Mode", chargingModes[chargingMode] ?? ""),
       _boolRow("Smart Charging", smartCharging),
-      _boolRow("Battery Backup", batteryBackup),
-      _boolRow("Resume Session After Power Loss", resumeSession),
       _boolRow("Restore Session From Fault", restoreFromFault),
       _row("Restore Fault Time (sec)", restoreTimeCtrl.text),
     ]);

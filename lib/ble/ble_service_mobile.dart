@@ -166,13 +166,26 @@ class BleServiceMobile extends BleServiceBase {
   @override
   Future<Map<String, dynamic>> readJson(String deviceId) {
     return _queue(() async {
+      final mergedResult = <String, dynamic>{};
       final completer = Completer<Map<String, dynamic>>();
-      // chunks map: key = chunkIndex (1-based), value = payload bytes
-      final chunks = <int, List<int>>{};
+
+      // Per-blob state — reset every time one complete blob is assembled
+      var chunks = <int, List<int>>{};
       int? totalChunks;
       int? totalLength;
 
-      // Notify char = same as write char (company spec)
+      Timer? quietTimer;
+      void resetQuietTimer() {
+        quietTimer?.cancel();
+        quietTimer = Timer(const Duration(milliseconds: 1500), () {
+          if (!completer.isCompleted) {
+            debugPrint(
+                "✅ No more blobs — finishing with keys: ${mergedResult.keys.toList()}");
+            completer.complete(mergedResult);
+          }
+        });
+      }
+
       final notifyChar = QualifiedCharacteristic(
         deviceId: deviceId,
         serviceId: EVSEConfig.serviceUuid,
@@ -182,7 +195,6 @@ class BleServiceMobile extends BleServiceBase {
       await _notifySub?.cancel();
       _notifySub = null;
 
-      // Subscribe to notify BEFORE sending request
       _notifySub = _ble.subscribeToCharacteristic(notifyChar).listen(
         (raw) {
           final packet = BleProtocol.parse(raw);
@@ -190,50 +202,54 @@ class BleServiceMobile extends BleServiceBase {
             debugPrint("❌ Invalid packet (${raw.length}B)");
             return;
           }
+
+          // Starting a fresh blob, or the header disagrees with what
+          // we're currently tracking — (re)start clean.
+          if (chunks.isEmpty || packet.totalChunks != totalChunks) {
+            chunks = {};
+            totalLength = packet.totalLength;
+            totalChunks = packet.totalChunks;
+          }
+
           debugPrint("📥 $packet");
-
-          totalLength ??= packet.totalLength;
-          totalChunks ??= packet.totalChunks;
-
-          // Store by 1-based chunk index
           chunks[packet.chunkIndex] = packet.payload;
+          resetQuietTimer();
 
-          // Done when we have all chunks
           if (chunks.length == totalChunks) {
             final assembled = <int>[];
-            // Assemble in order 1..totalChunks
             for (int i = 1; i <= totalChunks!; i++) {
               assembled.addAll(chunks[i] ?? []);
             }
-            // Trim to declared total length
-            final trimmed = assembled.length > totalLength!
+            final trimmed = assembled.length > (totalLength ?? 0)
                 ? assembled.sublist(0, totalLength!)
                 : assembled;
-
             final jsonStr = utf8.decode(trimmed, allowMalformed: true);
-            debugPrint("✅ JSON assembled "
-                "(${trimmed.length}B / $totalChunks chunk(s))");
+            debugPrint(
+                "✅ Blob assembled (${trimmed.length}B / $totalChunks chunk(s))");
 
-            if (!completer.isCompleted) {
-              try {
-                completer.complete(jsonDecode(jsonStr) as Map<String, dynamic>);
-              } catch (e) {
-                debugPrint("❌ JSON parse failed: $e");
-                completer.complete({});
-              }
+            try {
+              final decoded = jsonDecode(jsonStr) as Map<String, dynamic>;
+              mergedResult.addAll(decoded);
+              debugPrint(
+                  "🔗 Merged keys so far: ${mergedResult.keys.toList()}");
+            } catch (e) {
+              debugPrint("❌ Blob JSON parse failed: $e");
             }
+
+            // Reset — ready for the next blob (meter, then PM, etc.)
+            chunks = {};
+            totalChunks = null;
+            totalLength = null;
           }
         },
         onError: (e) {
           debugPrint("❌ Notify error: $e");
-          if (!completer.isCompleted) completer.complete({});
+          if (!completer.isCompleted) completer.complete(mergedResult);
         },
       );
 
-      // Wait for subscription to activate
       await Future.delayed(const Duration(milliseconds: 600));
 
-      // Send REQUEST packet to trigger charger to send data
       debugPrint("📤 Sending REQUEST packet...");
       final requestPackets = BleProtocol.buildPackets(
         [],
@@ -245,10 +261,93 @@ class BleServiceMobile extends BleServiceBase {
       debugPrint("📤 REQUEST sent — waiting for notify chunks...");
 
       final result = await completer.future.timeout(
+        const Duration(seconds: 15),
+        onTimeout: () {
+          debugPrint(
+              "⏰ Overall timeout — returning ${mergedResult.length} keys collected so far");
+          return mergedResult;
+        },
+      );
+
+      quietTimer?.cancel();
+      await _notifySub?.cancel();
+      _notifySub = null;
+      return result;
+    });
+  }
+
+  // ── Targeted Read — request ONE specific section only ─────────
+  @override
+  Future<Map<String, dynamic>> readJsonForSelection(
+      String deviceId, int selection) {
+    return _queue(() async {
+      final completer = Completer<Map<String, dynamic>>();
+      final chunks = <int, List<int>>{};
+      int? totalChunks;
+      int? totalLength;
+
+      final notifyChar = QualifiedCharacteristic(
+        deviceId: deviceId,
+        serviceId: EVSEConfig.serviceUuid,
+        characteristicId: EVSEConfig.notifyCharUuid,
+      );
+
+      await _notifySub?.cancel();
+      _notifySub = null;
+
+      _notifySub = _ble.subscribeToCharacteristic(notifyChar).listen(
+        (raw) {
+          final packet = BleProtocol.parse(raw);
+          if (packet == null) return;
+
+          if (chunks.isEmpty || packet.totalChunks != totalChunks) {
+            totalLength = packet.totalLength;
+            totalChunks = packet.totalChunks;
+          }
+          chunks[packet.chunkIndex] = packet.payload;
+          debugPrint("📥 Targeted $packet");
+
+          if (chunks.length == totalChunks) {
+            final assembled = <int>[];
+            for (int i = 1; i <= totalChunks!; i++) {
+              assembled.addAll(chunks[i] ?? []);
+            }
+            final trimmed = assembled.length > (totalLength ?? 0)
+                ? assembled.sublist(0, totalLength!)
+                : assembled;
+            final jsonStr = utf8.decode(trimmed, allowMalformed: true);
+            debugPrint("✅ Targeted read assembled (${trimmed.length}B)");
+            if (!completer.isCompleted) {
+              try {
+                completer.complete(jsonDecode(jsonStr) as Map<String, dynamic>);
+              } catch (e) {
+                debugPrint("❌ Targeted read parse failed: $e");
+                completer.complete({});
+              }
+            }
+          }
+        },
+        onError: (e) {
+          debugPrint("❌ Targeted notify error: $e");
+          if (!completer.isCompleted) completer.complete({});
+        },
+      );
+
+      await Future.delayed(const Duration(milliseconds: 600));
+
+      debugPrint("📤 Sending targeted REQUEST (selection=$selection)...");
+      final requestPackets = BleProtocol.buildPackets(
+        [],
+        selection: selection,
+        format: DataFormat.json,
+      );
+      await _ble.writeCharacteristicWithResponse(_writeChar(deviceId),
+          value: requestPackets[0]);
+
+      final result = await completer.future.timeout(
         const Duration(seconds: 10),
         onTimeout: () {
-          debugPrint("⏰ Timeout — "
-              "${chunks.length}/${totalChunks ?? '?'} chunks received");
+          debugPrint("⏰ Targeted read timeout (selection=$selection)");
           return {};
         },
       );

@@ -32,6 +32,11 @@ class Selection {
   static const int updateMeterConfig    = 2;
   static const int updateConnectorConfig= 3;
   static const int updatePowerModule    = 4;
+
+  static const int requestConfig            = 11;
+  static const int requestMeterConfig       = 12;
+  static const int requestConnectorConfig   = 13;
+  static const int requestPowerModuleConfig = 14;
 }
 
 class DataFormat {
@@ -43,9 +48,9 @@ class DataFormat {
 
 class BleProtocol {
   static const int headerSize = 10;
-  static const int reservedSize = 2;
-  static const int maxPacket = 512;
-  // Max payload per chunk = 512 - 10 header - 2 reserved = 500 bytes
+  static const int reservedSize = 0;
+  static const int maxPacket = 240; // Max BLE write size on charger
+  // Max payload per chunk = 240 - 10 header - 0 reserved = 230 bytes
   static const int payloadSize = maxPacket - headerSize - reservedSize;
 
   // ── Build packets ────────────────────────────────────────────

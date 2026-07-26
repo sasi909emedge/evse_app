@@ -22,10 +22,13 @@ abstract class BleServiceBase {
 
   // ── Read JSON ────────────────────────────────────────────────
   Future<Map<String, dynamic>> readJson(String deviceId);
+  Future<Map<String, dynamic>> readJsonForSelection(
+      String deviceId, int selection);
 
   // ── Write JSON ───────────────────────────────────────────────
   Future<void> writeJson(String deviceId, Map<String, dynamic> json);
-  Future<void> writeTabJson(String deviceId, Map<String, dynamic> json, int selection);
+  Future<void> writeTabJson(
+      String deviceId, Map<String, dynamic> json, int selection);
   // ── Send Command ─────────────────────────────────────────────
   Future<void> sendCommand(String deviceId, String command);
 
