@@ -28,15 +28,16 @@ import 'package:flutter/foundation.dart';
 
 class Selection {
   static const int request              = 0;
-  static const int updateConfig         = 1;
-  static const int updateMeterConfig    = 2;
-  static const int updateConnectorConfig= 3;
-  static const int updatePowerModule    = 4;
 
-  static const int requestConfig            = 11;
-  static const int requestMeterConfig       = 12;
-  static const int requestConnectorConfig   = 13;
-  static const int requestPowerModuleConfig = 14;
+  static const int requestConfig            = 1;
+  static const int requestMeterConfig       = 2;
+  static const int requestConnectorConfig   = 3;
+  static const int requestPowerModuleConfig = 4;
+
+  static const int updateConfig          = 11;
+  static const int updateMeterConfig     = 12;
+  static const int updateConnectorConfig = 13;
+  static const int updatePowerModule     = 14;
 }
 
 class DataFormat {

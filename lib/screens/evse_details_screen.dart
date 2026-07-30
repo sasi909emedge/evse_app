@@ -7,74 +7,70 @@ import '../main.dart';
 import '../ble/ble_protocol.dart';
 
 // ── Meter preset models ──────────────────────────────────────────
-class MeterPreset {
-  final String name;
-  final int voltage;
-  final int current;
-  final int power;
+class ChannelPreset {
+  final int address;
+  final int registerCount;
   final int dataType;
   final int wordOrder;
   final int scaleExponent;
-  final int offsetAddress;
-
-  const MeterPreset({
-    required this.name,
-    required this.voltage,
-    required this.current,
-    required this.power,
-    required this.dataType,
-    required this.wordOrder,
-    required this.scaleExponent,
-    required this.offsetAddress,
+  const ChannelPreset({
+    this.address = 0,
+    this.registerCount = 1,
+    this.dataType = 0,
+    this.wordOrder = 0,
+    this.scaleExponent = 0,
   });
 }
 
-// AC Meter presets
-const acMeterPresets = {
-  'EM4M': MeterPreset(
-    name: 'EM4M',
-    voltage: 1,
-    current: 2,
-    power: 3,
-    dataType: 5,
-    wordOrder: 2,
-    scaleExponent: 0,
-    offsetAddress: 0,
-  ),
-  'EMEDGE1234': MeterPreset(
-    name: 'EMEDGE1234',
-    voltage: 1,
-    current: 2,
-    power: 3,
-    dataType: 6,
-    wordOrder: 3,
-    scaleExponent: 0,
-    offsetAddress: 0,
-  ),
+// PLACEHOLDER VALUES — awaiting real Modbus register maps from company datasheets.
+// Every meter model currently maps every channel to address 0. Update these
+// once the real per-meter register tables are provided.
+final Map<String, Map<String, ChannelPreset>> acMeterChannelPresets = {
+  for (final name in [
+    'Selec EM4M',
+    'Selec MFM384',
+    'Elmeasure M30',
+    'Elmeasure LG2XX0D',
+    'Rishabh 3430',
+    'Havells SDM630',
+  ])
+    name: {
+      for (final ch in [
+        'VoltageV1N',
+        'VoltageV2N',
+        'VoltageV3N',
+        'VoltageV12',
+        'VoltageV23',
+        'VoltageV31',
+        'CurrentI1',
+        'CurrentI2',
+        'CurrentI3',
+        'TotalKW',
+        'AveragePF',
+        'TotalKWh',
+        'CumulativeKWh',
+        'ResetCumulativeKWh',
+      ])
+        ch: const ChannelPreset(),
+    },
 };
 
-// DC Meter presets
-const dcMeterPresets = {
-  'EM2M': MeterPreset(
-    name: 'EM2M',
-    voltage: 1,
-    current: 2,
-    power: 3,
-    dataType: 0,
-    wordOrder: 0,
-    scaleExponent: 0,
-    offsetAddress: 0,
-  ),
-  'DCIVYEM619002': MeterPreset(
-    name: 'DCIVYEM619002',
-    voltage: 1,
-    current: 2,
-    power: 3,
-    dataType: 2,
-    wordOrder: 2,
-    scaleExponent: 0,
-    offsetAddress: 0,
-  ),
+final Map<String, Map<String, ChannelPreset>> dcMeterChannelPresets = {
+  for (final name in [
+    'Rishabh EM6000',
+    'Rishabh EM6001',
+    'Selec EM2M',
+    'Elmeasure EDC2150D',
+    'Elecnova PD195Z-CD31F',
+    'Elecnova PD195Z-CD32F',
+    'Pilot DCMSPM90',
+    'IVY DC EM619002',
+    'Yada DCM3366D-J2',
+  ])
+    name: {
+      for (final ch in ['Voltage', 'Current', 'Power', 'Energy'])
+        ch: const ChannelPreset(),
+    },
 };
 
 const Map<int, String> _meterDataTypeTokens = {
@@ -204,11 +200,14 @@ class _EvseDetailsScreenState extends State<EvseDetailsScreen>
   final displaysCtrl = TextEditingController();
   final connectorsCtrl = TextEditingController();
   final powerModulesCtrl = TextEditingController();
-  final dcOverVoltCtrl = TextEditingController();
+  final dcOverVoltCtrl1 = TextEditingController();
+  final dcOverVoltCtrl2 = TextEditingController();
   final acOverVoltCtrl = TextEditingController();
-  final dcUnderVoltCtrl = TextEditingController();
+  final dcUnderVoltCtrl1 = TextEditingController();
+  final dcUnderVoltCtrl2 = TextEditingController();
   final acUnderVoltCtrl = TextEditingController();
-  final dcOverCurrCtrl = TextEditingController();
+  final dcOverCurrCtrl1 = TextEditingController();
+  final dcOverCurrCtrl2 = TextEditingController();
   final acOverCurrCtrl = TextEditingController();
   final overTempCtrl = TextEditingController();
 
@@ -388,6 +387,51 @@ class _EvseDetailsScreenState extends State<EvseDetailsScreen>
     return 'User Defined';
   }
 
+  void _applyAcPreset(String meterType) {
+    final channels = acMeterChannelPresets[meterType];
+    if (channels == null) return; // 'User Defined' — leave editable, untouched
+    void apply(MeterData d, ChannelPreset p) {
+      d.moduleAddress = p.address;
+      d.registerCount = p.registerCount;
+      d.dataType = p.dataType;
+      d.wordOrder = p.wordOrder;
+      d.scaleExponent = p.scaleExponent;
+    }
+
+    apply(acV1N, channels['VoltageV1N']!);
+    apply(acV2N, channels['VoltageV2N']!);
+    apply(acV3N, channels['VoltageV3N']!);
+    apply(acV12, channels['VoltageV12']!);
+    apply(acV23, channels['VoltageV23']!);
+    apply(acV31, channels['VoltageV31']!);
+    apply(acI1, channels['CurrentI1']!);
+    apply(acI2, channels['CurrentI2']!);
+    apply(acI3, channels['CurrentI3']!);
+    apply(acTotalKW, channels['TotalKW']!);
+    apply(acAvgPF, channels['AveragePF']!);
+    apply(acTotalKWh, channels['TotalKWh']!);
+    apply(acCumKWh, channels['CumulativeKWh']!);
+    apply(acResetCumKWh, channels['ResetCumulativeKWh']!);
+  }
+
+  void _applyDcPreset(String meterType, MeterData voltage, MeterData current,
+      MeterData power, MeterData energy) {
+    final channels = dcMeterChannelPresets[meterType];
+    if (channels == null) return; // 'User Defined'
+    void apply(MeterData d, ChannelPreset p) {
+      d.moduleAddress = p.address;
+      d.registerCount = p.registerCount;
+      d.dataType = p.dataType;
+      d.wordOrder = p.wordOrder;
+      d.scaleExponent = p.scaleExponent;
+    }
+
+    apply(voltage, channels['Voltage']!);
+    apply(current, channels['Current']!);
+    apply(power, channels['Power']!);
+    apply(energy, channels['Energy']!);
+  }
+
   // ── Theme ─────────────────────────────────────────────────────
   bool get _isDark => Theme.of(context).brightness == Brightness.dark;
   Color get _bg => _isDark ? AppColors.backgroundDark : AppColors.background;
@@ -445,11 +489,39 @@ class _EvseDetailsScreenState extends State<EvseDetailsScreen>
     displaysCtrl.text = d["NumberOfDisplays"]?.toString() ?? "";
     connectorsCtrl.text = d["NumberOfConnectors"]?.toString() ?? "";
     powerModulesCtrl.text = d["NumberOfPowerModules"]?.toString() ?? "";
-    dcOverVoltCtrl.text = d["DCoverVoltageThreshold"]?.toString() ?? "";
+    final dcOverVoltList = d["DCoverVoltageThreshold"];
+    if (dcOverVoltList is List) {
+      dcOverVoltCtrl1.text =
+          dcOverVoltList.isNotEmpty ? dcOverVoltList[0].toString() : "";
+      dcOverVoltCtrl2.text =
+          dcOverVoltList.length > 1 ? dcOverVoltList[1].toString() : "";
+    } else {
+      dcOverVoltCtrl1.text = dcOverVoltList?.toString() ?? "";
+      dcOverVoltCtrl2.text = "";
+    }
     acOverVoltCtrl.text = d["ACoverVoltageThreshold"]?.toString() ?? "";
-    dcUnderVoltCtrl.text = d["DCunderVoltageThreshold"]?.toString() ?? "";
+    final dcUnderVoltList = d["DCunderVoltageThreshold"];
+    if (dcUnderVoltList is List) {
+      dcUnderVoltCtrl1.text =
+          dcUnderVoltList.isNotEmpty ? dcUnderVoltList[0].toString() : "";
+      dcUnderVoltCtrl2.text =
+          dcUnderVoltList.length > 1 ? dcUnderVoltList[1].toString() : "";
+    } else {
+      dcUnderVoltCtrl1.text = dcUnderVoltList?.toString() ?? "";
+      dcUnderVoltCtrl2.text = "";
+    }
     acUnderVoltCtrl.text = d["ACunderVoltageThreshold"]?.toString() ?? "";
-    dcOverCurrCtrl.text = d["DCoverCurrentThreshold"]?.toString() ?? "";
+    final dcOverCurrList = d["DCoverCurrentThreshold"];
+    if (dcOverCurrList is List) {
+      dcOverCurrCtrl1.text =
+          dcOverCurrList.isNotEmpty ? dcOverCurrList[0].toString() : "";
+      dcOverCurrCtrl2.text =
+          dcOverCurrList.length > 1 ? dcOverCurrList[1].toString() : "";
+    } else {
+      // Fallback for old single-value format, if ever received
+      dcOverCurrCtrl1.text = dcOverCurrList?.toString() ?? "";
+      dcOverCurrCtrl2.text = "";
+    }
     acOverCurrCtrl.text = d["ACoverCurrentThreshold"]?.toString() ?? "";
     overTempCtrl.text = d["overTemperatureThreshold"]?.toString() ?? "";
     // Parse AC meter channels
@@ -500,7 +572,10 @@ class _EvseDetailsScreenState extends State<EvseDetailsScreen>
 // Parse power modules
     for (int i = 0; i < 8; i++) {
       final pm = d["PowerModule${i + 1}"] as Map<String, dynamic>? ?? {};
+
       pmAvailable[i] = _bool(pm["isAvailable"]);
+      debugPrint(
+          "PM${i + 1}: raw=${pm["isAvailable"]} parsed=${pmAvailable[i]}");
       pmAddressCtrl[i].text = pm["moduleAddress"]?.toString() ?? "";
       pmMaxVoltCtrl[i].text = pm["MaxVoltage"]?.toString() ?? "";
       pmMaxCurrCtrl[i].text = pm["MaxCurrent"]?.toString() ?? "";
@@ -511,6 +586,7 @@ class _EvseDetailsScreenState extends State<EvseDetailsScreen>
       pmMaxTempCtrl[i].text = pm["MaxTemperature"]?.toString() ?? "";
       pmMinTempCtrl[i].text = pm["MinTemperature"]?.toString() ?? "";
     }
+    debugPrint("Final pmAvailable = $pmAvailable");
     acVoltageAddr = acM["voltageAddr"] as int? ?? 1;
     acCurrentAddr = acM["currentAddr"] as int? ?? 2;
     acPowerAddr = acM["powerAddr"] as int? ?? 3;
@@ -589,7 +665,7 @@ class _EvseDetailsScreenState extends State<EvseDetailsScreen>
   }
 
   bool _mapsEqual(Map<String, dynamic> a, Map<String, dynamic> b) {
-    return jsonEncode(a) == jsonEncode(b);
+    return _valuesMatch(a, b);
   }
 
   void _debugDiff(
@@ -628,21 +704,56 @@ class _EvseDetailsScreenState extends State<EvseDetailsScreen>
   }
 
   bool _valuesMatch(dynamic sent, dynamic got) {
-    // Numeric formatting differences (60.0 vs 60)
+    // Handle nulls
+    if (sent == null || got == null) {
+      return sent == got;
+    }
+
+    // Numbers (1000 == 1000.0)
     if (sent is num && got is num) {
       return (sent.toDouble() - got.toDouble()).abs() < 0.0001;
     }
-    // Enum sent as string label, charger echoed back as raw int (or vice versa)
+
+    // Enum string ↔ int
     if (sent is String && got is num) {
       final asInt = _enumStringToInt(sent);
       if (asInt != null) return asInt == got;
     }
+
     if (sent is num && got is String) {
       final asInt = _enumStringToInt(got);
       if (asInt != null) return asInt == sent;
     }
-    // Everything else — exact structural match (maps, lists, bools, plain strings)
-    return jsonEncode(sent) == jsonEncode(got);
+
+    // Map comparison (recursive)
+    if (sent is Map && got is Map) {
+      if (sent.length != got.length) return false;
+
+      for (final key in sent.keys) {
+        if (!got.containsKey(key)) return false;
+
+        if (!_valuesMatch(sent[key], got[key])) {
+          return false;
+        }
+      }
+
+      return true;
+    }
+
+    // List comparison
+    if (sent is List && got is List) {
+      if (sent.length != got.length) return false;
+
+      for (int i = 0; i < sent.length; i++) {
+        if (!_valuesMatch(sent[i], got[i])) {
+          return false;
+        }
+      }
+
+      return true;
+    }
+
+    return sent == got;
   }
 
   void _restoreOriginalValues() {
@@ -719,18 +830,26 @@ class _EvseDetailsScreenState extends State<EvseDetailsScreen>
         "NumberOfDisplays": int.tryParse(displaysCtrl.text.trim()) ?? 1,
         "NumberOfConnectors": int.tryParse(connectorsCtrl.text.trim()) ?? 1,
         "NumberOfPowerModules": int.tryParse(powerModulesCtrl.text.trim()) ?? 1,
-        "DCoverVoltageThreshold":
-            double.tryParse(dcOverVoltCtrl.text.trim()) ?? 0.0,
+        "DCoverVoltageThreshold": [
+          double.tryParse(dcOverVoltCtrl1.text.trim()) ?? 0.0,
+          if (_connectorCount >= 2)
+            double.tryParse(dcOverVoltCtrl2.text.trim()) ?? 0.0,
+        ],
         "ACoverVoltageThreshold":
             double.tryParse(acOverVoltCtrl.text.trim()) ?? 0.0,
-        "DCunderVoltageThreshold":
-            double.tryParse(dcUnderVoltCtrl.text.trim()) ?? 0.0,
+        "DCunderVoltageThreshold": [
+          double.tryParse(dcUnderVoltCtrl1.text.trim()) ?? 0.0,
+          if (_connectorCount >= 2)
+            double.tryParse(dcUnderVoltCtrl2.text.trim()) ?? 0.0,
+        ],
         "ACunderVoltageThreshold":
             double.tryParse(acUnderVoltCtrl.text.trim()) ?? 0.0,
-        "DCoverCurrentThreshold":
-            double.tryParse(dcOverCurrCtrl.text.trim()) ?? 0.0,
-        "ACoverCurrentThreshold":
-            double.tryParse(acOverCurrCtrl.text.trim()) ?? 0.0,
+        "DCoverCurrentThreshold": [
+          int.tryParse(dcOverCurrCtrl1.text.trim()) ?? 0,
+          if (_connectorCount >= 2)
+            int.tryParse(dcOverCurrCtrl2.text.trim()) ?? 0,
+        ],
+        "ACoverCurrentThreshold": int.tryParse(acOverCurrCtrl.text.trim()) ?? 0,
         "overTemperatureThreshold":
             double.tryParse(overTempCtrl.text.trim()) ?? 0.0,
         "acMeter": {
@@ -814,23 +933,31 @@ class _EvseDetailsScreenState extends State<EvseDetailsScreen>
       };
 
   Map<String, dynamic> _buildConnectorMap() => {
-        "NumberOfConnectors": int.tryParse(connectorsCtrl.text.trim()) ?? 1,
-        "DCoverVoltageThreshold":
-            double.tryParse(dcOverVoltCtrl.text.trim()) ?? 0.0,
-        "ACoverVoltageThreshold":
-            double.tryParse(acOverVoltCtrl.text.trim()) ?? 0.0,
-        "DCunderVoltageThreshold":
-            double.tryParse(dcUnderVoltCtrl.text.trim()) ?? 0.0,
-        "ACunderVoltageThreshold":
-            double.tryParse(acUnderVoltCtrl.text.trim()) ?? 0.0,
-        "DCoverCurrentThreshold":
-            double.tryParse(dcOverCurrCtrl.text.trim()) ?? 0.0,
-        "ACoverCurrentThreshold":
-            double.tryParse(acOverCurrCtrl.text.trim()) ?? 0.0,
         "overTemperatureThreshold":
             double.tryParse(overTempCtrl.text.trim()) ?? 0.0,
+        "ACunderVoltageThreshold":
+            double.tryParse(acUnderVoltCtrl.text.trim()) ?? 0.0,
+        "ACoverVoltageThreshold":
+            double.tryParse(acOverVoltCtrl.text.trim()) ?? 0.0,
+        "ACoverCurrentThreshold": int.tryParse(acOverCurrCtrl.text.trim()) ?? 0,
+        "NumberOfConnectors": int.tryParse(connectorsCtrl.text.trim()) ?? 1,
+        "DCunderVoltageThreshold": [
+          double.tryParse(dcUnderVoltCtrl1.text.trim()) ?? 0.0,
+          if (_connectorCount >= 2)
+            double.tryParse(dcUnderVoltCtrl2.text.trim()) ?? 0.0,
+        ],
+        "DCoverVoltageThreshold": [
+          double.tryParse(dcOverVoltCtrl1.text.trim()) ?? 0.0,
+          if (_connectorCount >= 2)
+            double.tryParse(dcOverVoltCtrl2.text.trim()) ?? 0.0,
+        ],
+        "DCoverCurrentThreshold": [
+          int.tryParse(dcOverCurrCtrl1.text.trim()) ?? 0,
+          if (_connectorCount >= 2)
+            int.tryParse(dcOverCurrCtrl2.text.trim()) ?? 0,
+        ],
       };
-      
+
   Map<String, dynamic> _buildPowerModuleMap() => {
         "NumberOfPowerModules": int.tryParse(powerModulesCtrl.text.trim()) ?? 1,
         for (int i = 0; i < 8; i++)
@@ -1009,6 +1136,9 @@ class _EvseDetailsScreenState extends State<EvseDetailsScreen>
       }
       if (!mounted) return;
       if (data.isNotEmpty) {
+        debugPrint("========== INITIAL LOAD ==========");
+        debugPrint("Has PowerModules: ${data.containsKey("PowerModules")}");
+        debugPrint("PowerModules = ${jsonEncode(data["PowerModules"])}");
         setState(() => _applyData(data));
         await _saveLocally(data); // Save to local storage
       }
@@ -1088,11 +1218,14 @@ class _EvseDetailsScreenState extends State<EvseDetailsScreen>
       displaysCtrl,
       connectorsCtrl,
       powerModulesCtrl,
-      dcOverVoltCtrl,
+      dcOverVoltCtrl1,
+      dcOverVoltCtrl2,
       acOverVoltCtrl,
-      dcUnderVoltCtrl,
+      dcUnderVoltCtrl1,
+      dcUnderVoltCtrl2,
       acUnderVoltCtrl,
-      dcOverCurrCtrl,
+      dcOverCurrCtrl1,
+      dcOverCurrCtrl2,
       acOverCurrCtrl,
       overTempCtrl,
       otaURLCtrl,
@@ -1185,6 +1318,11 @@ class _EvseDetailsScreenState extends State<EvseDetailsScreen>
 
         final readback = await BleService.instance.readJsonForSelection(
             widget.deviceId, Selection.requestConnectorConfig);
+        debugPrint("========== CONNECTOR SENT ==========");
+        debugPrint(const JsonEncoder.withIndent('  ').convert(connectorJson));
+
+        debugPrint("========== CONNECTOR READBACK ==========");
+        debugPrint(const JsonEncoder.withIndent('  ').convert(readback));
         final ok =
             readback.isNotEmpty && _verifyContains(readback, connectorJson);
 
@@ -1206,12 +1344,18 @@ class _EvseDetailsScreenState extends State<EvseDetailsScreen>
       // ----------------------------------------------------
       if (_meterDirty) {
         final meterJson = _buildMeterMap();
+        debugPrint("📝 SENDING METER JSON: ${jsonEncode(meterJson)}");
         await BleService.instance.writeTabJson(
             widget.deviceId, meterJson, Selection.updateMeterConfig);
         await Future.delayed(const Duration(milliseconds: 800));
 
         final readback = await BleService.instance.readJsonForSelection(
             widget.deviceId, Selection.requestMeterConfig);
+        debugPrint("========== SENT ==========");
+        debugPrint(const JsonEncoder.withIndent('  ').convert(meterJson));
+
+        debugPrint("========== READBACK ==========");
+        debugPrint(const JsonEncoder.withIndent('  ').convert(readback));
         final ok = readback.isNotEmpty && _verifyContains(readback, meterJson);
 
         if (ok) {
@@ -1238,6 +1382,11 @@ class _EvseDetailsScreenState extends State<EvseDetailsScreen>
 
         final readback = await BleService.instance.readJsonForSelection(
             widget.deviceId, Selection.requestPowerModuleConfig);
+        debugPrint("========== POWER MODULE SENT ==========");
+        debugPrint(const JsonEncoder.withIndent('  ').convert(pmJson));
+
+        debugPrint("========== POWER MODULE READBACK ==========");
+        debugPrint(const JsonEncoder.withIndent('  ').convert(readback));
         final ok = readback.isNotEmpty && _verifyContains(readback, pmJson);
 
         if (ok) {
@@ -1823,79 +1972,6 @@ class _EvseDetailsScreenState extends State<EvseDetailsScreen>
         ),
       );
 
-  // ── Meter config block ────────────────────────────────────────
-  Widget _meterBlock({
-    required String title,
-    required String meterType,
-    required List<String> meterOptions,
-    required ValueChanged<String> onMeterTypeChanged,
-    required int voltageAddr,
-    required int currentAddr,
-    required int powerAddr,
-    required int dataType,
-    required int wordOrder,
-    required int scaleExp,
-    required int offsetAddr,
-    required ValueChanged<int> onVoltageAddr,
-    required ValueChanged<int> onCurrentAddr,
-    required ValueChanged<int> onPowerAddr,
-    required ValueChanged<int> onDataType,
-    required ValueChanged<int> onWordOrder,
-    required ValueChanged<int> onScaleExp,
-    required ValueChanged<int> onOffsetAddr,
-  }) {
-    final isUserDefined = meterType == 'User Defined';
-    final isReadOnly = !isUserDefined || !_editMode;
-
-    if (!_editMode) {
-      return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        _section(title),
-        _dropRow("Meter Type", meterType),
-        _row("Voltage Address", voltageAddr.toString()),
-        _row("Current Address", currentAddr.toString()),
-        _row("Power Address", powerAddr.toString()),
-        _dropRow("Data Type", dataTypes[dataType] ?? ""),
-        _dropRow("Word Order", wordOrders[wordOrder] ?? ""),
-        _row("Scale Exponent", scaleExp.toString()),
-        _row("Offset Address", offsetAddr.toString()),
-      ]);
-    }
-
-    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-      _section(title),
-      _strDropEdit("Meter Type", meterType, meterOptions, (v) {
-        onMeterTypeChanged(v);
-        // Apply preset values when non-custom selected
-        final preset = meterOptions == acMeterOptions
-            ? acMeterPresets[v]
-            : dcMeterPresets[v];
-        if (preset != null) {
-          setState(() {
-            onVoltageAddr(preset.voltage);
-            onCurrentAddr(preset.current);
-            onPowerAddr(preset.power);
-            onDataType(preset.dataType);
-            onWordOrder(preset.wordOrder);
-            onScaleExp(preset.scaleExponent);
-            onOffsetAddr(preset.offsetAddress);
-          });
-        }
-      }),
-      _intField("Voltage Address", voltageAddr, onVoltageAddr,
-          readOnly: isReadOnly),
-      _intField("Current Address", currentAddr, onCurrentAddr,
-          readOnly: isReadOnly),
-      _intField("Power Address", powerAddr, onPowerAddr, readOnly: isReadOnly),
-      _dropEdit(
-          "Data Type", dataType, dataTypes, isReadOnly ? (_) {} : onDataType),
-      _dropEdit("Word Order", wordOrder, wordOrders,
-          isReadOnly ? (_) {} : onWordOrder),
-      _intField("Scale Exponent", scaleExp, onScaleExp, readOnly: isReadOnly),
-      _intField("Offset Address", offsetAddr, onOffsetAddr,
-          readOnly: isReadOnly),
-    ]);
-  }
-
   // ================================================================
   // TABS
   // ================================================================
@@ -2044,29 +2120,79 @@ class _EvseDetailsScreenState extends State<EvseDetailsScreen>
         padding: const EdgeInsets.only(bottom: 300),
         children: [
           _section("Hardware Configuration"),
-          _field("Number of Displays", displaysCtrl,
-              keyboard: TextInputType.number),
-          _field("Number of Connectors", connectorsCtrl,
-              keyboard: TextInputType.number),
-          _field("Number of Power Modules", powerModulesCtrl,
-              keyboard: TextInputType.number),
-          _section("Protection & Safety Thresholds"),
-          _field("DC Over Voltage", dcOverVoltCtrl,
-              keyboard: TextInputType.numberWithOptions(decimal: true)),
-          _field("AC Over Voltage", acOverVoltCtrl,
-              keyboard: TextInputType.numberWithOptions(decimal: true)),
-          _field("DC Under Voltage", dcUnderVoltCtrl,
-              keyboard: TextInputType.numberWithOptions(decimal: true)),
-          _field("AC Under Voltage", acUnderVoltCtrl,
-              keyboard: TextInputType.numberWithOptions(decimal: true)),
-          _field("DC Over Current", dcOverCurrCtrl,
-              keyboard: TextInputType.numberWithOptions(decimal: true)),
-          _field("AC Over Current", acOverCurrCtrl,
-              keyboard: TextInputType.numberWithOptions(decimal: true)),
-          _field("Over Temperature", overTempCtrl,
-              keyboard: TextInputType.numberWithOptions(decimal: true),
-              action: TextInputAction.done),
+          _field(
+            "Number of Displays",
+            displaysCtrl,
+            keyboard: TextInputType.number,
+          ),
+          _section("Temperature"),
+          _field(
+            "Over Temperature Threshold",
+            overTempCtrl,
+            keyboard: const TextInputType.numberWithOptions(decimal: true),
+          ),
+          _section("AC Protection"),
+          _field(
+            "AC Under Voltage",
+            acUnderVoltCtrl,
+            keyboard: const TextInputType.numberWithOptions(decimal: true),
+          ),
+          _field(
+            "AC Over Voltage",
+            acOverVoltCtrl,
+            keyboard: const TextInputType.numberWithOptions(decimal: true),
+          ),
+          _field(
+            "AC Over Current",
+            acOverCurrCtrl,
+            keyboard: TextInputType.number,
+          ),
+          _section("Connector Configuration"),
+          _field(
+            "Number of Connectors",
+            connectorsCtrl,
+            keyboard: TextInputType.number,
+          ),
+          _section("Connector 1"),
+          _field(
+            "DC Under Voltage",
+            dcUnderVoltCtrl1,
+            keyboard: const TextInputType.numberWithOptions(decimal: true),
+          ),
+          _field(
+            "DC Over Voltage",
+            dcOverVoltCtrl1,
+            keyboard: const TextInputType.numberWithOptions(decimal: true),
+          ),
+          _field(
+            "DC Over Current",
+            dcOverCurrCtrl1,
+            keyboard: TextInputType.number,
+          ),
+          if (_connectorCount >= 2) ...[
+            _section("Connector 2"),
+            _field(
+              "DC Under Voltage",
+              dcUnderVoltCtrl2,
+              keyboard: const TextInputType.numberWithOptions(decimal: true),
+            ),
+            _field(
+              "DC Over Voltage",
+              dcOverVoltCtrl2,
+              keyboard: const TextInputType.numberWithOptions(decimal: true),
+            ),
+            _field(
+              "DC Over Current",
+              dcOverCurrCtrl2,
+              keyboard: TextInputType.number,
+            ),
+          ],
           _section("Power Modules"),
+          _field(
+            "Number of Power Modules",
+            powerModulesCtrl,
+            keyboard: TextInputType.number,
+          ),
           ...List.generate(8, (i) {
             final pmNum = i + 1;
             final numPM = int.tryParse(powerModulesCtrl.text.trim()) ?? 0;
@@ -2163,16 +2289,47 @@ class _EvseDetailsScreenState extends State<EvseDetailsScreen>
     return ListView(children: [
       _section("Hardware Configuration"),
       _row("Number of Displays", displaysCtrl.text),
-      _row("Number of Connectors", connectorsCtrl.text),
-      _row("Number of Power Modules", powerModulesCtrl.text),
-      _section("Protection & Safety Thresholds"),
-      _row("DC Over Voltage", dcOverVoltCtrl.text),
-      _row("AC Over Voltage", acOverVoltCtrl.text),
-      _row("DC Under Voltage", dcUnderVoltCtrl.text),
+      _section("Temperature"),
+      _row("Over Temperature Threshold", overTempCtrl.text),
+      _section("AC Protection"),
       _row("AC Under Voltage", acUnderVoltCtrl.text),
-      _row("DC Over Current", dcOverCurrCtrl.text),
+      _row("AC Over Voltage", acOverVoltCtrl.text),
       _row("AC Over Current", acOverCurrCtrl.text),
-      _row("Over Temperature", overTempCtrl.text),
+      _section("Connector Configuration"),
+      _row("Number of Connectors", connectorsCtrl.text),
+      _section("Connector 1"),
+      _row("DC Under Voltage", dcUnderVoltCtrl1.text),
+      _row("DC Over Voltage", dcOverVoltCtrl1.text),
+      _row("DC Over Current", dcOverCurrCtrl1.text),
+      if (_connectorCount >= 2) ...[
+        _section("Connector 2"),
+        _row("DC Under Voltage", dcUnderVoltCtrl2.text),
+        _row("DC Over Voltage", dcOverVoltCtrl2.text),
+        _row("DC Over Current", dcOverCurrCtrl2.text),
+      ],
+      _section("Power Modules"),
+      _row("Number of Power Modules", powerModulesCtrl.text),
+      ...List.generate(
+        int.tryParse(powerModulesCtrl.text.trim()) ?? 0,
+        (i) => Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            _section("PM${i + 1}"),
+            _boolRow("Available", pmAvailable[i]),
+            if (pmAvailable[i]) ...[
+              _row("Module Address", pmAddressCtrl[i].text),
+              _row("Max Voltage", pmMaxVoltCtrl[i].text),
+              _row("Max Current", pmMaxCurrCtrl[i].text),
+              _row("Min Voltage", pmMinVoltCtrl[i].text),
+              _row("Min Current", pmMinCurrCtrl[i].text),
+              _row("Max Power", pmMaxPowerCtrl[i].text),
+              _row("Min Power", pmMinPowerCtrl[i].text),
+              _row("Max Temperature", pmMaxTempCtrl[i].text),
+              _row("Min Temperature", pmMinTempCtrl[i].text),
+            ],
+          ],
+        ),
+      ),
       _section("Actions"),
       _actionBtn(
           "Restart Charger", Icons.restart_alt_rounded, _textPrimary, _restart),
@@ -2410,6 +2567,7 @@ class _EvseDetailsScreenState extends State<EvseDetailsScreen>
           _strDropEdit("Meter Type", acMeterType, acMeterOptions, (v) {
             setState(() {
               acMeterType = v;
+              _applyAcPreset(v);
             });
 
             _markMeterChanged();
@@ -2446,6 +2604,7 @@ class _EvseDetailsScreenState extends State<EvseDetailsScreen>
             _strDropEdit("Meter Type", dcMeter1Type, dcMeterOptions, (v) {
               setState(() {
                 dcMeter1Type = v;
+                _applyDcPreset(v, dc1Voltage, dc1Current, dc1Power, dc1Energy);
               });
 
               _markMeterChanged();
@@ -2473,6 +2632,7 @@ class _EvseDetailsScreenState extends State<EvseDetailsScreen>
             _strDropEdit("Meter Type", dcMeter2Type, dcMeterOptions, (v) {
               setState(() {
                 dcMeter2Type = v;
+                _applyDcPreset(v, dc2Voltage, dc2Current, dc2Power, dc2Energy);
               });
 
               _markMeterChanged();
