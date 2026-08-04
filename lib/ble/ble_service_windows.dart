@@ -180,7 +180,7 @@ class BleServiceWindows extends base.BleServiceBase {
       Timer? quietTimer;
       void resetQuietTimer() {
         quietTimer?.cancel();
-        quietTimer = Timer(const Duration(milliseconds: 1500), () {
+        quietTimer = Timer(const Duration(milliseconds: 6000), () {
           if (!completer.isCompleted) {
             debugPrint(
                 "✅ WinBLE no more blobs — finishing with keys: ${mergedResult.keys.toList()}");

@@ -177,7 +177,7 @@ class BleServiceMobile extends BleServiceBase {
       Timer? quietTimer;
       void resetQuietTimer() {
         quietTimer?.cancel();
-        quietTimer = Timer(const Duration(milliseconds: 1500), () {
+        quietTimer = Timer(const Duration(milliseconds: 6000), () {
           if (!completer.isCompleted) {
             debugPrint(
                 "✅ No more blobs — finishing with keys: ${mergedResult.keys.toList()}");

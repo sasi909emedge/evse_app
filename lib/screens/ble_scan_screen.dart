@@ -22,6 +22,7 @@ class BleScanScreen extends StatefulWidget {
 class _BleScanScreenState extends State<BleScanScreen>
     with SingleTickerProviderStateMixin {
   final List<BleDevice> _devices = [];
+  final Set<String> _hiddenDevices = {};
   int _hiddenCount = 0;
 
   StreamSubscription<BleDevice>? _scanSub;
@@ -78,6 +79,7 @@ class _BleScanScreenState extends State<BleScanScreen>
     _scanTimer?.cancel();
     setState(() {
       _devices.clear();
+      _hiddenDevices.clear();
       _hiddenCount = 0;
       _selected = null;
       _scanning = true;
@@ -92,7 +94,13 @@ class _BleScanScreenState extends State<BleScanScreen>
           if (mounted) setState(() => _devices.add(d));
         }
       } else {
-        if (mounted) setState(() => _hiddenCount++);
+        if (_hiddenDevices.add(d.id)) {
+          if (mounted) {
+            setState(() {
+              _hiddenCount = _hiddenDevices.length;
+            });
+          }
+        }
       }
     }, onError: (_) => _stopScan());
 

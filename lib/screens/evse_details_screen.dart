@@ -22,55 +22,87 @@ class ChannelPreset {
   });
 }
 
-// PLACEHOLDER VALUES — awaiting real Modbus register maps from company datasheets.
-// Every meter model currently maps every channel to address 0. Update these
-// once the real per-meter register tables are provided.
+// ⚠️ FAKE / PLACEHOLDER VALUES — NOT real hardware register maps.
+// Generated with a simple deterministic pattern so each meter model produces
+// distinct, non-zero values for testing purposes only. Replace each meter's
+// entry with real datasheet values once available — no other code needs to
+// change; just swap the generator call for a literal map per meter, e.g.:
+//   'Selec EM4M': {
+//     'VoltageV1N': ChannelPreset(address: 0x0131, registerCount: 1,
+//         dataType: 0, wordOrder: 0, scaleExponent: -1),
+//     ... (14 entries for AC, 4 for DC)
+//   },
+
+const List<String> _acChannelNames = [
+  'VoltageV1N',
+  'VoltageV2N',
+  'VoltageV3N',
+  'VoltageV12',
+  'VoltageV23',
+  'VoltageV31',
+  'CurrentI1',
+  'CurrentI2',
+  'CurrentI3',
+  'TotalKW',
+  'AveragePF',
+  'TotalKWh',
+  'CumulativeKWh',
+  'ResetCumulativeKWh',
+];
+const List<String> _dcChannelNames = ['Voltage', 'Current', 'Power', 'Energy'];
+
+Map<String, ChannelPreset> _fakeChannelSet(
+    List<String> channelNames, int meterIndex) {
+  const dataTypeCycle = [
+    0,
+    1,
+    2,
+    3,
+    5
+  ]; // UINT16, INT16, UINT32, INT32, FLOAT32
+  const wordOrderCycle = [0, 2, 4]; // AB, ABCD, CDAB
+  final result = <String, ChannelPreset>{};
+  for (int i = 0; i < channelNames.length; i++) {
+    result[channelNames[i]] = ChannelPreset(
+      address: 0x0100 + (meterIndex * 0x0050) + (i * 2),
+      registerCount: (i % 3 == 0) ? 1 : 2,
+      dataType: dataTypeCycle[i % dataTypeCycle.length],
+      wordOrder: wordOrderCycle[i % wordOrderCycle.length],
+      scaleExponent: -(i % 4),
+    );
+  }
+  return result;
+}
+
+final List<String> _acMeterModelOrder = [
+  'Selec EM4M',
+  'Selec MFM384',
+  'Elmeasure M30',
+  'Elmeasure LG2XX0D',
+  'Rishabh 3430',
+  'Havells SDM630',
+];
+
+final List<String> _dcMeterModelOrder = [
+  'Rishabh EM6000',
+  'Rishabh EM6001',
+  'Selec EM2M',
+  'Elmeasure EDC2150D',
+  'Elecnova PD195Z-CD31F',
+  'Elecnova PD195Z-CD32F',
+  'Pilot DCMSPM90',
+  'IVY DC EM619002',
+  'Yada DCM3366D-J2',
+];
+
 final Map<String, Map<String, ChannelPreset>> acMeterChannelPresets = {
-  for (final name in [
-    'Selec EM4M',
-    'Selec MFM384',
-    'Elmeasure M30',
-    'Elmeasure LG2XX0D',
-    'Rishabh 3430',
-    'Havells SDM630',
-  ])
-    name: {
-      for (final ch in [
-        'VoltageV1N',
-        'VoltageV2N',
-        'VoltageV3N',
-        'VoltageV12',
-        'VoltageV23',
-        'VoltageV31',
-        'CurrentI1',
-        'CurrentI2',
-        'CurrentI3',
-        'TotalKW',
-        'AveragePF',
-        'TotalKWh',
-        'CumulativeKWh',
-        'ResetCumulativeKWh',
-      ])
-        ch: const ChannelPreset(),
-    },
+  for (int i = 0; i < _acMeterModelOrder.length; i++)
+    _acMeterModelOrder[i]: _fakeChannelSet(_acChannelNames, i),
 };
 
 final Map<String, Map<String, ChannelPreset>> dcMeterChannelPresets = {
-  for (final name in [
-    'Rishabh EM6000',
-    'Rishabh EM6001',
-    'Selec EM2M',
-    'Elmeasure EDC2150D',
-    'Elecnova PD195Z-CD31F',
-    'Elecnova PD195Z-CD32F',
-    'Pilot DCMSPM90',
-    'IVY DC EM619002',
-    'Yada DCM3366D-J2',
-  ])
-    name: {
-      for (final ch in ['Voltage', 'Current', 'Power', 'Energy'])
-        ch: const ChannelPreset(),
-    },
+  for (int i = 0; i < _dcMeterModelOrder.length; i++)
+    _dcMeterModelOrder[i]: _fakeChannelSet(_dcChannelNames, i),
 };
 
 const Map<int, String> _meterDataTypeTokens = {
@@ -573,9 +605,13 @@ class _EvseDetailsScreenState extends State<EvseDetailsScreen>
     for (int i = 0; i < 8; i++) {
       final pm = d["PowerModule${i + 1}"] as Map<String, dynamic>? ?? {};
 
-      pmAvailable[i] = _bool(pm["isAvailable"]);
       debugPrint(
-          "PM${i + 1}: raw=${pm["isAvailable"]} parsed=${pmAvailable[i]}");
+          "PM${i + 1} raw isAvailable = ${pm["isAvailable"]} (${pm["isAvailable"].runtimeType})");
+
+      pmAvailable[i] = _bool(pm["isAvailable"]);
+
+      debugPrint("PM${i + 1}: parsed = ${pmAvailable[i]}");
+
       pmAddressCtrl[i].text = pm["moduleAddress"]?.toString() ?? "";
       pmMaxVoltCtrl[i].text = pm["MaxVoltage"]?.toString() ?? "";
       pmMaxCurrCtrl[i].text = pm["MaxCurrent"]?.toString() ?? "";
@@ -586,6 +622,7 @@ class _EvseDetailsScreenState extends State<EvseDetailsScreen>
       pmMaxTempCtrl[i].text = pm["MaxTemperature"]?.toString() ?? "";
       pmMinTempCtrl[i].text = pm["MinTemperature"]?.toString() ?? "";
     }
+
     debugPrint("Final pmAvailable = $pmAvailable");
     acVoltageAddr = acM["voltageAddr"] as int? ?? 1;
     acCurrentAddr = acM["currentAddr"] as int? ?? 2;
@@ -629,7 +666,7 @@ class _EvseDetailsScreenState extends State<EvseDetailsScreen>
   bool _bool(dynamic v) {
     if (v == null) return false;
     if (v is bool) return v;
-    if (v is int) return v == 1;
+    if (v is num) return v == 1 || v == 1.0;
     if (v is String) return v.toLowerCase() == 'true' || v == '1';
     return false;
   }
@@ -1137,8 +1174,8 @@ class _EvseDetailsScreenState extends State<EvseDetailsScreen>
       if (!mounted) return;
       if (data.isNotEmpty) {
         debugPrint("========== INITIAL LOAD ==========");
-        debugPrint("Has PowerModules: ${data.containsKey("PowerModules")}");
-        debugPrint("PowerModules = ${jsonEncode(data["PowerModules"])}");
+        debugPrint("Has PowerModule1: ${data.containsKey("PowerModule1")}");
+        debugPrint("PowerModule1 = ${jsonEncode(data["PowerModule1"])}");
         setState(() => _applyData(data));
         await _saveLocally(data); // Save to local storage
       }
@@ -1606,32 +1643,132 @@ class _EvseDetailsScreenState extends State<EvseDetailsScreen>
 
   Widget _boolRow(String label, bool value) => Container(
         color: _surface,
-        child: Column(children: [
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-            child: Row(children: [
-              Expanded(
-                  child: Text(label,
-                      style: TextStyle(fontSize: 13, color: _textSecondary))),
-              Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                decoration: BoxDecoration(
-                  color: value
-                      ? AppColors.success.withOpacity(0.12)
-                      : AppColors.error.withOpacity(0.10),
-                  borderRadius: BorderRadius.circular(20),
-                ),
-                child: Text(value ? "ON" : "OFF",
-                    style: TextStyle(
+        child: Column(
+          children: [
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      label,
+                      style: TextStyle(
+                        fontSize: 13,
+                        color: _textSecondary,
+                      ),
+                    ),
+                  ),
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 10,
+                      vertical: 4,
+                    ),
+                    decoration: BoxDecoration(
+                      color: value
+                          ? AppColors.success.withOpacity(0.12)
+                          : AppColors.error.withOpacity(0.10),
+                      borderRadius: BorderRadius.circular(20),
+                    ),
+                    child: Text(
+                      value ? "Available" : "Unavailable",
+                      style: TextStyle(
                         fontSize: 12,
                         fontWeight: FontWeight.w600,
-                        color: value ? AppColors.success : AppColors.error)),
+                        color: value ? AppColors.success : AppColors.error,
+                      ),
+                    ),
+                  ),
+                ],
               ),
-            ]),
-          ),
-          Divider(height: 1, color: _border),
-        ]),
+            ),
+            Divider(height: 1, color: _border),
+          ],
+        ),
+      );
+
+  Widget _statusRow(String label, bool value) => Container(
+        color: _surface,
+        child: Column(
+          children: [
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      label,
+                      style: TextStyle(
+                        fontSize: 13,
+                        color: _textSecondary,
+                      ),
+                    ),
+                  ),
+                  Container(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
+                    decoration: BoxDecoration(
+                      color: value
+                          ? AppColors.success.withOpacity(0.12)
+                          : AppColors.error.withOpacity(0.10),
+                      borderRadius: BorderRadius.circular(20),
+                    ),
+                    child: Text(
+                      value ? "Enabled" : "Disabled",
+                      style: TextStyle(
+                        color: value ? AppColors.success : AppColors.error,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            Divider(height: 1, color: _border),
+          ],
+        ),
+      );
+
+  Widget _pmStatusRow(bool value) => Container(
+        color: _surface,
+        child: Column(
+          children: [
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      "Status",
+                      style: TextStyle(
+                        fontSize: 13,
+                        color: _textSecondary,
+                      ),
+                    ),
+                  ),
+                  Container(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
+                    decoration: BoxDecoration(
+                      color: value
+                          ? AppColors.success.withOpacity(0.12)
+                          : AppColors.error.withOpacity(0.10),
+                      borderRadius: BorderRadius.circular(20),
+                    ),
+                    child: Text(
+                      value ? "Available" : "Unavailable",
+                      style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                        color: value ? AppColors.success : AppColors.error,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            Divider(height: 1, color: _border),
+          ],
+        ),
       );
 
   Widget _dropRow(String label, String value) => Container(
@@ -2030,8 +2167,8 @@ class _EvseDetailsScreenState extends State<EvseDetailsScreen>
       _row("Firmware Version", firmwareVersionCtrl.text),
       _row("Slave Firmware Version", slaveFirmwareVersionCtrl.text),
       _section("Charging Configuration"),
-      _boolRow("Smart Charging", smartCharging),
-      _boolRow("Restore Session From Fault", restoreFromFault),
+      _statusRow("Smart Charging", smartCharging),
+      _statusRow("Restore Session From Fault", restoreFromFault),
       _row("Restore Fault Time (sec)", restoreTimeCtrl.text),
     ]);
   }
@@ -2085,14 +2222,14 @@ class _EvseDetailsScreenState extends State<EvseDetailsScreen>
       _dropRow("Network Mode", networkModes[networkMode] ?? ""),
       _row("WebSocket URL", webSocketURLCtrl.text),
       _section("WiFi Settings"),
-      _boolRow("WiFi Enable", wifiEnable),
+      _statusRow("WiFi Enable", wifiEnable),
       if (wifiEnable) ...[
         _row("WiFi Priority", wifiPriorityCtrl.text),
         _row("WiFi SSID", wifiSSIDCtrl.text),
         _row("WiFi Password", wifiPassCtrl.text.isEmpty ? "--" : "••••••••"),
       ],
       _section("Ethernet Settings"),
-      _boolRow("Ethernet Enable", ethernetEnable),
+      _statusRow("Ethernet Enable", ethernetEnable),
       if (ethernetEnable) ...[
         _row("Ethernet Priority", ethernetPriorityCtrl.text),
         _dropRow("Ethernet Config", ethernetTypes[ethernetConfig] ?? ""),
@@ -2103,7 +2240,7 @@ class _EvseDetailsScreenState extends State<EvseDetailsScreen>
         _row("MAC Address", macAddressCtrl.text),
       ],
       _section("GSM Settings"),
-      _boolRow("GSM Enable", gsmEnable),
+      _statusRow("GSM Enable", gsmEnable),
       if (gsmEnable) ...[
         _row("GSM Priority", gsmPriorityCtrl.text),
         _row("GSM APN", gsmAPNCtrl.text),
@@ -2210,16 +2347,18 @@ class _EvseDetailsScreenState extends State<EvseDetailsScreen>
                               fontWeight: FontWeight.w600,
                               color: AppColors.primary)),
                     ),
-                    _boolRow("Available", pmAvailable[i]),
-                    _row("Module Address", pmAddressCtrl[i].text),
-                    _row("Max Voltage", pmMaxVoltCtrl[i].text),
-                    _row("Max Current", pmMaxCurrCtrl[i].text),
-                    _row("Min Voltage", pmMinVoltCtrl[i].text),
-                    _row("Min Current", pmMinCurrCtrl[i].text),
-                    _row("Max Power", pmMaxPowerCtrl[i].text),
-                    _row("Min Power", pmMinPowerCtrl[i].text),
-                    _row("Max Temperature", pmMaxTempCtrl[i].text),
-                    _row("Min Temperature", pmMinTempCtrl[i].text),
+                    _pmStatusRow(pmAvailable[i]),
+                    if (pmAvailable[i]) ...[
+                      _row("Module Address", pmAddressCtrl[i].text),
+                      _row("Max Voltage", pmMaxVoltCtrl[i].text),
+                      _row("Max Current", pmMaxCurrCtrl[i].text),
+                      _row("Min Voltage", pmMinVoltCtrl[i].text),
+                      _row("Min Current", pmMinCurrCtrl[i].text),
+                      _row("Max Power", pmMaxPowerCtrl[i].text),
+                      _row("Min Power", pmMinPowerCtrl[i].text),
+                      _row("Max Temperature", pmMaxTempCtrl[i].text),
+                      _row("Min Temperature", pmMinTempCtrl[i].text),
+                    ],
                   ]);
             }
 
@@ -2243,20 +2382,25 @@ class _EvseDetailsScreenState extends State<EvseDetailsScreen>
                               fontWeight: FontWeight.w700,
                               color: AppColors.primary)),
                       const Spacer(),
-                      Text("Available",
+                      Text(pmAvailable[i] ? "Available" : "Unavailable",
                           style:
                               TextStyle(fontSize: 12, color: _textSecondary)),
                       const SizedBox(width: 8),
-                      Switch(
-                        value: pmAvailable[i],
-                        onChanged: (v) {
-                          setState(() {
-                            pmAvailable[i] = v;
-                          });
+                      IgnorePointer(
+                        ignoring: i != 0,
+                        child: Switch(
+                          value: pmAvailable[i],
+                          onChanged: (v) {
+                            if (i != 0) return;
 
-                          _markPowerModuleChanged();
-                        },
-                        activeColor: AppColors.primary,
+                            setState(() {
+                              pmAvailable[i] = v;
+                            });
+
+                            _markPowerModuleChanged();
+                          },
+                          activeColor: AppColors.primary,
+                        ),
                       ),
                     ]),
                     if (pmAvailable[i]) ...[
@@ -2315,7 +2459,7 @@ class _EvseDetailsScreenState extends State<EvseDetailsScreen>
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             _section("PM${i + 1}"),
-            _boolRow("Available", pmAvailable[i]),
+            _statusRow("Status", pmAvailable[i]),
             if (pmAvailable[i]) ...[
               _row("Module Address", pmAddressCtrl[i].text),
               _row("Max Voltage", pmMaxVoltCtrl[i].text),
@@ -2686,10 +2830,10 @@ class _EvseDetailsScreenState extends State<EvseDetailsScreen>
     }
     return ListView(children: [
       _section("OTA Configuration"),
-      _boolRow("OTA URL From CMS", otaUrlFromCMS),
+      _statusRow("OTA URL From CMS", otaUrlFromCMS),
       _row("OTA URL", otaURLCtrl.text),
       _section("Diagnostic Configuration"),
-      _boolRow("Diagnostic Server", diagnosticServer),
+      _statusRow("Diagnostic Server", diagnosticServer),
       _row("Diagnostic Server URL", diagnosticURLCtrl.text),
     ]);
   }
