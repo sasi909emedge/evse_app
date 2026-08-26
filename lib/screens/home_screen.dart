@@ -118,15 +118,6 @@ class _HomeScreenState extends State<HomeScreen> {
           const SizedBox(height: 4),
 
           _DItem(
-            icon: _isDark ? Icons.light_mode_rounded : Icons.dark_mode_rounded,
-            label: _isDark ? 'Light Mode' : 'Dark Mode',
-            selected: false,
-            onTap: () {
-              EVSEApp.of(context)?.toggleTheme();
-              Navigator.pop(context);
-            },
-          ),
-          _DItem(
             icon: Icons.logout_rounded,
             label: 'Logout',
             selected: false,
@@ -158,16 +149,7 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
         ),
         title: Text(_titles[_idx]),
-        actions: [
-          IconButton(
-            icon: Icon(
-              _isDark ? Icons.light_mode_rounded : Icons.dark_mode_rounded,
-              size: 20,
-              color: _textSecondary,
-            ),
-            onPressed: () => EVSEApp.of(context)?.toggleTheme(),
-          ),
-        ],
+        actions: const [],
       ),
       body: _page,
     );

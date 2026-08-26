@@ -1,177 +1,14 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'card_management_screen.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../ble/ble_service_selector.dart';
 import '../theme/app_colors.dart';
 import '../main.dart';
 import '../ble/ble_protocol.dart';
-
-// ── Meter preset models ──────────────────────────────────────────
-class ChannelPreset {
-  final int address;
-  final int registerCount;
-  final int dataType;
-  final int wordOrder;
-  final int scaleExponent;
-  const ChannelPreset({
-    this.address = 0,
-    this.registerCount = 1,
-    this.dataType = 0,
-    this.wordOrder = 0,
-    this.scaleExponent = 0,
-  });
-}
-
-// ⚠️ FAKE / PLACEHOLDER VALUES — NOT real hardware register maps.
-// Generated with a simple deterministic pattern so each meter model produces
-// distinct, non-zero values for testing purposes only. Replace each meter's
-// entry with real datasheet values once available — no other code needs to
-// change; just swap the generator call for a literal map per meter, e.g.:
-//   'Selec EM4M': {
-//     'VoltageV1N': ChannelPreset(address: 0x0131, registerCount: 1,
-//         dataType: 0, wordOrder: 0, scaleExponent: -1),
-//     ... (14 entries for AC, 4 for DC)
-//   },
-
-const List<String> _acChannelNames = [
-  'VoltageV1N',
-  'VoltageV2N',
-  'VoltageV3N',
-  'VoltageV12',
-  'VoltageV23',
-  'VoltageV31',
-  'CurrentI1',
-  'CurrentI2',
-  'CurrentI3',
-  'TotalKW',
-  'AveragePF',
-  'TotalKWh',
-  'CumulativeKWh',
-  'ResetCumulativeKWh',
-];
-const List<String> _dcChannelNames = ['Voltage', 'Current', 'Power', 'Energy'];
-
-Map<String, ChannelPreset> _fakeChannelSet(
-    List<String> channelNames, int meterIndex) {
-  const dataTypeCycle = [
-    0,
-    1,
-    2,
-    3,
-    5
-  ]; // UINT16, INT16, UINT32, INT32, FLOAT32
-  const wordOrderCycle = [0, 2, 4]; // AB, ABCD, CDAB
-  final result = <String, ChannelPreset>{};
-  for (int i = 0; i < channelNames.length; i++) {
-    result[channelNames[i]] = ChannelPreset(
-      address: 0x0100 + (meterIndex * 0x0050) + (i * 2),
-      registerCount: (i % 3 == 0) ? 1 : 2,
-      dataType: dataTypeCycle[i % dataTypeCycle.length],
-      wordOrder: wordOrderCycle[i % wordOrderCycle.length],
-      scaleExponent: -(i % 4),
-    );
-  }
-  return result;
-}
-
-final List<String> _acMeterModelOrder = [
-  'Selec EM4M',
-  'Selec MFM384',
-  'Elmeasure M30',
-  'Elmeasure LG2XX0D',
-  'Rishabh 3430',
-  'Havells SDM630',
-];
-
-final List<String> _dcMeterModelOrder = [
-  'Rishabh EM6000',
-  'Rishabh EM6001',
-  'Selec EM2M',
-  'Elmeasure EDC2150D',
-  'Elecnova PD195Z-CD31F',
-  'Elecnova PD195Z-CD32F',
-  'Pilot DCMSPM90',
-  'IVY DC EM619002',
-  'Yada DCM3366D-J2',
-];
-
-final Map<String, Map<String, ChannelPreset>> acMeterChannelPresets = {
-  for (int i = 0; i < _acMeterModelOrder.length; i++)
-    _acMeterModelOrder[i]: _fakeChannelSet(_acChannelNames, i),
-};
-
-final Map<String, Map<String, ChannelPreset>> dcMeterChannelPresets = {
-  for (int i = 0; i < _dcMeterModelOrder.length; i++)
-    _dcMeterModelOrder[i]: _fakeChannelSet(_dcChannelNames, i),
-};
-
-const Map<int, String> _meterDataTypeTokens = {
-  0: "UINT16",
-  1: "INT16",
-  2: "UINT32",
-  3: "INT32",
-  4: "UINT64",
-  5: "FLOAT32",
-  6: "BCD16",
-  7: "BCD32",
-};
-const Map<int, String> _meterWordOrderTokens = {
-  0: "AB",
-  1: "BA",
-  2: "ABCD",
-  3: "BADC",
-  4: "CDAB",
-  5: "DCBA",
-};
-
-int _parseHexAddress(dynamic v) {
-  if (v == null) return 0;
-  final s = v.toString();
-  return s.toLowerCase().startsWith('0x')
-      ? int.tryParse(s.substring(2), radix: 16) ?? 0
-      : int.tryParse(s) ?? 0;
-}
-
-int _reverseLookup(Map<int, String> map, dynamic val, int fallback) {
-  if (val == null) return fallback;
-  final str = val.toString();
-  for (final e in map.entries) {
-    if (e.value == str) return e.key;
-  }
-  return fallback;
-}
-
-class MeterData {
-  int param; // EnergyMeterParam: 1=Voltage,2=Current,3=Power,4=Energy
-  int moduleAddress;
-  int registerCount;
-  int dataType; // EnergyMeterDataType
-  int wordOrder; // EnergyMeterWordOrder
-  int scaleExponent;
-  int offsetAddress;
-
-  MeterData({
-    this.param = 1,
-    this.moduleAddress = 0,
-    this.registerCount = 1,
-    this.dataType = 0,
-    this.wordOrder = 0,
-    this.scaleExponent = 0,
-    this.offsetAddress = 0,
-  });
-
-  factory MeterData.fromMap(Map<String, dynamic> m) {
-    final rawDataType = m["DataType"] as int? ?? 0;
-    final rawWordOrder = m["WordOrder"] as int? ?? 0;
-    return MeterData(
-      moduleAddress: m["Address"] as int? ?? 0,
-      registerCount: m["RegisterCount"] as int? ?? 1,
-      dataType: (rawDataType >= 0 && rawDataType <= 7) ? rawDataType : 0,
-      wordOrder: (rawWordOrder >= 0 && rawWordOrder <= 5) ? rawWordOrder : 0,
-      scaleExponent: m["ScaleExponent"] as int? ?? 0,
-    );
-  }
-}
+import '../models/meter_models.dart';
+import '../widgets/common/config_widgets.dart' as w;
+import '../constants/evse_constants.dart';
 
 class EvseDetailsScreen extends StatefulWidget {
   final String deviceId;
@@ -232,6 +69,7 @@ class _EvseDetailsScreenState extends State<EvseDetailsScreen>
   final displaysCtrl = TextEditingController();
   final connectorsCtrl = TextEditingController();
   final powerModulesCtrl = TextEditingController();
+  final mergersCtrl = TextEditingController();
   final dcOverVoltCtrl1 = TextEditingController();
   final dcOverVoltCtrl2 = TextEditingController();
   final acOverVoltCtrl = TextEditingController();
@@ -242,6 +80,17 @@ class _EvseDetailsScreenState extends State<EvseDetailsScreen>
   final dcOverCurrCtrl2 = TextEditingController();
   final acOverCurrCtrl = TextEditingController();
   final overTempCtrl = TextEditingController();
+  final dcMinCurrCtrl1 = TextEditingController();
+  final dcMinCurrCtrl2 = TextEditingController();
+  final dcMaxPowerCtrl1 = TextEditingController();
+  final dcMaxPowerCtrl2 = TextEditingController();
+  final dcMaxEnergyCtrl1 = TextEditingController();
+  final dcMaxEnergyCtrl2 = TextEditingController();
+  // Commented out for now — uncomment when Max/Min Temperature is needed.
+  // final dcMaxTempCtrl1 = TextEditingController();
+  // final dcMaxTempCtrl2 = TextEditingController();
+  // final dcMinTempCtrl1 = TextEditingController();
+  // final dcMinTempCtrl2 = TextEditingController();
 
   // ── TAB 4: Meters ────────────────────────────────────────────
   // AC Meter
@@ -327,81 +176,6 @@ class _EvseDetailsScreenState extends State<EvseDetailsScreen>
   Map<String, dynamic> _originalPowerModule = {};
   Map<String, dynamic> _originalConnector = {};
   late TabController _tabCtrl;
-
-  // ── Maps ─────────────────────────────────────────────────────
-  final Map<int, String> chargerTypes = {
-    1: "STANDALONE",
-    2: "DISPENSER",
-    3: "STACK"
-  };
-  final Map<int, String> boardModelOptions = {1: "V1", 2: "V2", 3: "V3"};
-  final Map<int, String> networkModes = {
-    0: "ONLINE",
-    1: "OFFLINE",
-    2: "ONLINE_OFFLINE",
-    3: "PLUGNPLAY"
-  };
-  final Map<int, String> ethernetTypes = {0: "STATIC", 1: "DHCP"};
-  final Map<int, String> dataTypes = {
-    0: "UINT16",
-    1: "INT16",
-    2: "UINT32",
-    3: "INT32",
-    4: "UINT64",
-    5: "FLOAT32",
-    6: "BCD16",
-    7: "BCD32"
-  };
-  final Map<int, String> wordOrders = {
-    0: "AB",
-    1: "BA",
-    2: "ABCD",
-    3: "BADC",
-    4: "CDAB",
-    5: "DCBA"
-  };
-  final List<String> acMeterOptions = [
-    'Selec EM4M',
-    'Selec MFM384',
-    'Elmeasure M30',
-    'Elmeasure LG2XX0D',
-    'Rishabh 3430',
-    'Havells SDM630',
-    'User Defined',
-  ];
-  final List<String> dcMeterOptions = [
-    'Rishabh EM6000',
-    'Rishabh EM6001',
-    'Selec EM2M',
-    'Elmeasure EDC2150D',
-    'Elecnova PD195Z-CD31F',
-    'Elecnova PD195Z-CD32F',
-    'Pilot DCMSPM90',
-    'IVY DC EM619002',
-    'Yada DCM3366D-J2',
-    'User Defined',
-  ];
-  final Map<String, int> acMeterTypeEnum = {
-    'User Defined': 0,
-    'Selec EM4M': 1,
-    'Selec MFM384': 2,
-    'Elmeasure M30': 3,
-    'Elmeasure LG2XX0D': 4,
-    'Rishabh 3430': 5,
-    'Havells SDM630': 6,
-  };
-  final Map<String, int> dcMeterTypeEnum = {
-    'User Defined': 0,
-    'Rishabh EM6000': 1,
-    'Rishabh EM6001': 2,
-    'Selec EM2M': 3,
-    'Elmeasure EDC2150D': 4,
-    'Elecnova PD195Z-CD31F': 5,
-    'Elecnova PD195Z-CD32F': 6,
-    'Pilot DCMSPM90': 7,
-    'IVY DC EM619002': 8,
-    'Yada DCM3366D-J2': 9,
-  };
 
   String _acMeterTypeFromEnum(dynamic raw) {
     final v = raw is int ? raw : int.tryParse(raw?.toString() ?? '') ?? 0;
@@ -521,7 +295,8 @@ class _EvseDetailsScreenState extends State<EvseDetailsScreen>
     displaysCtrl.text = d["NumberOfDisplays"]?.toString() ?? "";
     connectorsCtrl.text = d["NumberOfConnectors"]?.toString() ?? "";
     powerModulesCtrl.text = d["NumberOfPowerModules"]?.toString() ?? "";
-    final dcOverVoltList = d["DCoverVoltageThreshold"];
+    mergersCtrl.text = d["NumberOfMergers"]?.toString() ?? "";
+    final dcOverVoltList = d["DCMaxVoltage"];
     if (dcOverVoltList is List) {
       dcOverVoltCtrl1.text =
           dcOverVoltList.isNotEmpty ? dcOverVoltList[0].toString() : "";
@@ -532,7 +307,7 @@ class _EvseDetailsScreenState extends State<EvseDetailsScreen>
       dcOverVoltCtrl2.text = "";
     }
     acOverVoltCtrl.text = d["ACoverVoltageThreshold"]?.toString() ?? "";
-    final dcUnderVoltList = d["DCunderVoltageThreshold"];
+    final dcUnderVoltList = d["DCMinVoltage"];
     if (dcUnderVoltList is List) {
       dcUnderVoltCtrl1.text =
           dcUnderVoltList.isNotEmpty ? dcUnderVoltList[0].toString() : "";
@@ -543,7 +318,7 @@ class _EvseDetailsScreenState extends State<EvseDetailsScreen>
       dcUnderVoltCtrl2.text = "";
     }
     acUnderVoltCtrl.text = d["ACunderVoltageThreshold"]?.toString() ?? "";
-    final dcOverCurrList = d["DCoverCurrentThreshold"];
+    final dcOverCurrList = d["DCMaxCurrent"];
     if (dcOverCurrList is List) {
       dcOverCurrCtrl1.text =
           dcOverCurrList.isNotEmpty ? dcOverCurrList[0].toString() : "";
@@ -556,6 +331,36 @@ class _EvseDetailsScreenState extends State<EvseDetailsScreen>
     }
     acOverCurrCtrl.text = d["ACoverCurrentThreshold"]?.toString() ?? "";
     overTempCtrl.text = d["overTemperatureThreshold"]?.toString() ?? "";
+    final dcMinCurrList = d["DCMinCurrent"];
+    if (dcMinCurrList is List) {
+      dcMinCurrCtrl1.text =
+          dcMinCurrList.isNotEmpty ? dcMinCurrList[0].toString() : "";
+      dcMinCurrCtrl2.text =
+          dcMinCurrList.length > 1 ? dcMinCurrList[1].toString() : "";
+    } else {
+      dcMinCurrCtrl1.text = dcMinCurrList?.toString() ?? "";
+      dcMinCurrCtrl2.text = "";
+    }
+    final dcMaxPowerList = d["DCMaxPower"];
+    if (dcMaxPowerList is List) {
+      dcMaxPowerCtrl1.text =
+          dcMaxPowerList.isNotEmpty ? dcMaxPowerList[0].toString() : "";
+      dcMaxPowerCtrl2.text =
+          dcMaxPowerList.length > 1 ? dcMaxPowerList[1].toString() : "";
+    } else {
+      dcMaxPowerCtrl1.text = dcMaxPowerList?.toString() ?? "";
+      dcMaxPowerCtrl2.text = "";
+    }
+    final dcMaxEnergyList = d["DCMaxEnergy"];
+    if (dcMaxEnergyList is List) {
+      dcMaxEnergyCtrl1.text =
+          dcMaxEnergyList.isNotEmpty ? dcMaxEnergyList[0].toString() : "";
+      dcMaxEnergyCtrl2.text =
+          dcMaxEnergyList.length > 1 ? dcMaxEnergyList[1].toString() : "";
+    } else {
+      dcMaxEnergyCtrl1.text = dcMaxEnergyList?.toString() ?? "";
+      dcMaxEnergyCtrl2.text = "";
+    }
     // Parse AC meter channels
     final acM = d["acMeter"] as Map<String, dynamic>? ?? {};
     acMeterType = _acMeterTypeFromEnum(acM["meterType"]);
@@ -826,104 +631,6 @@ class _EvseDetailsScreenState extends State<EvseDetailsScreen>
     return (v >= 1 && v <= 3) ? v : 1;
   }
 
-  Map<String, dynamic> _buildSaveMap() => {
-        "defaultConfig": defaultConfig,
-        "ChargerType": chargerTypes[chargerType],
-        "masterBoardModel": masterBoardModel,
-        "dispenserBoardModel": dispenserBoardModel,
-        "displayBoardModel": displayBoardModel,
-        "relayBoardModel": relayBoardModel,
-        "serialNumber": serialCtrl.text.trim(),
-        "chargerName": chargerNameCtrl.text.trim(),
-        "chargePointVendor": vendorCtrl.text.trim(),
-        "chargePointModel": modelCtrl.text.trim(),
-        "commissionedBy": widget.loggedInUser,
-        "commissionedDate": _today(),
-        "firmwareVersion": firmwareVersionCtrl.text.trim(),
-        "slavefirmwareVersion": slaveFirmwareVersionCtrl.text.trim(),
-        "smartCharging": smartCharging,
-        "restoreSessionFromFault": restoreFromFault,
-        "restoreSessionFromFaultTime":
-            int.tryParse(restoreTimeCtrl.text.trim()) ?? 0,
-        "networkMode": networkModes[networkMode],
-        "webSocketURL": webSocketURLCtrl.text.trim(),
-        "wifiEnable": wifiEnable,
-        "wifiPriority": int.tryParse(wifiPriorityCtrl.text.trim()) ?? 1,
-        "wifiSSID": wifiSSIDCtrl.text.trim(),
-        "wifiPassword": wifiPassCtrl.text.trim(),
-        "ethernetEnable": ethernetEnable,
-        "ethernetPriority": int.tryParse(ethernetPriorityCtrl.text.trim()) ?? 3,
-        "ethernetConfig": ethernetTypes[ethernetConfig],
-        "ipAddress": ipAddressCtrl.text.trim(),
-        "gatewayAddress": gatewayCtrl.text.trim(),
-        "dnsAddress": dnsCtrl.text.trim(),
-        "subnetMask": subnetCtrl.text.trim(),
-        "macAddress": macAddressCtrl.text.trim(),
-        "gsmEnable": gsmEnable,
-        "gsmPriority": int.tryParse(gsmPriorityCtrl.text.trim()) ?? 2,
-        "gsmAPN": gsmAPNCtrl.text.trim(),
-        "simIMEINumber": simIMEICtrl.text.trim(),
-        "simIMSINumber": simIMSICtrl.text.trim(),
-        "NumberOfDisplays": int.tryParse(displaysCtrl.text.trim()) ?? 1,
-        "NumberOfConnectors": int.tryParse(connectorsCtrl.text.trim()) ?? 1,
-        "NumberOfPowerModules": int.tryParse(powerModulesCtrl.text.trim()) ?? 1,
-        "DCoverVoltageThreshold": [
-          double.tryParse(dcOverVoltCtrl1.text.trim()) ?? 0.0,
-          if (_connectorCount >= 2)
-            double.tryParse(dcOverVoltCtrl2.text.trim()) ?? 0.0,
-        ],
-        "ACoverVoltageThreshold":
-            double.tryParse(acOverVoltCtrl.text.trim()) ?? 0.0,
-        "DCunderVoltageThreshold": [
-          double.tryParse(dcUnderVoltCtrl1.text.trim()) ?? 0.0,
-          if (_connectorCount >= 2)
-            double.tryParse(dcUnderVoltCtrl2.text.trim()) ?? 0.0,
-        ],
-        "ACunderVoltageThreshold":
-            double.tryParse(acUnderVoltCtrl.text.trim()) ?? 0.0,
-        "DCoverCurrentThreshold": [
-          int.tryParse(dcOverCurrCtrl1.text.trim()) ?? 0,
-          if (_connectorCount >= 2)
-            int.tryParse(dcOverCurrCtrl2.text.trim()) ?? 0,
-        ],
-        "ACoverCurrentThreshold": int.tryParse(acOverCurrCtrl.text.trim()) ?? 0,
-        "overTemperatureThreshold":
-            double.tryParse(overTempCtrl.text.trim()) ?? 0.0,
-        "acMeter": {
-          "meterType": acMeterType,
-          "voltageAddr": acVoltageAddr,
-          "currentAddr": acCurrentAddr,
-          "powerAddr": acPowerAddr,
-          "dataType": acDataType,
-          "wordOrder": acWordOrder,
-          "scaleExp": acScaleExp,
-          "offsetAddr": acOffsetAddr,
-        },
-        "dcMeter1": {
-          "meterType": dcMeter1Type,
-          "voltageAddr": dc1VoltageAddr,
-          "currentAddr": dc1CurrentAddr,
-          "powerAddr": dc1PowerAddr,
-          "dataType": dc1DataType,
-          "wordOrder": dc1WordOrder,
-          "scaleExp": dc1ScaleExp,
-          "offsetAddr": dc1OffsetAddr,
-        },
-        "dcMeter2": {
-          "meterType": dcMeter2Type,
-          "voltageAddr": dc2VoltageAddr,
-          "currentAddr": dc2CurrentAddr,
-          "powerAddr": dc2PowerAddr,
-          "dataType": dc2DataType,
-          "wordOrder": dc2WordOrder,
-          "scaleExp": dc2ScaleExp,
-          "offsetAddr": dc2OffsetAddr,
-        },
-        "OtaUrlFromCMSEnable": otaUrlFromCMS,
-        "OtaURLConfig": otaURLCtrl.text.trim(),
-        "DiagnosticServer": diagnosticServer,
-        "DiagnosticServerUrl": diagnosticURLCtrl.text.trim(),
-      };
   Map<String, dynamic> _buildChargerMap() => {
         "defaultConfig": defaultConfig,
         "ChargerType": chargerTypes[chargerType],
@@ -967,6 +674,7 @@ class _EvseDetailsScreenState extends State<EvseDetailsScreen>
 
   Map<String, dynamic> _buildHardwareMap() => {
         "NumberOfDisplays": int.tryParse(displaysCtrl.text.trim()) ?? 1,
+        "NumberOfMergers": int.tryParse(mergersCtrl.text.trim()) ?? 0,
       };
 
   Map<String, dynamic> _buildConnectorMap() => {
@@ -978,21 +686,47 @@ class _EvseDetailsScreenState extends State<EvseDetailsScreen>
             double.tryParse(acOverVoltCtrl.text.trim()) ?? 0.0,
         "ACoverCurrentThreshold": int.tryParse(acOverCurrCtrl.text.trim()) ?? 0,
         "NumberOfConnectors": int.tryParse(connectorsCtrl.text.trim()) ?? 1,
-        "DCunderVoltageThreshold": [
-          double.tryParse(dcUnderVoltCtrl1.text.trim()) ?? 0.0,
-          if (_connectorCount >= 2)
-            double.tryParse(dcUnderVoltCtrl2.text.trim()) ?? 0.0,
-        ],
-        "DCoverVoltageThreshold": [
+        "DCMaxVoltage": [
           double.tryParse(dcOverVoltCtrl1.text.trim()) ?? 0.0,
           if (_connectorCount >= 2)
             double.tryParse(dcOverVoltCtrl2.text.trim()) ?? 0.0,
         ],
-        "DCoverCurrentThreshold": [
+        "DCMinVoltage": [
+          double.tryParse(dcUnderVoltCtrl1.text.trim()) ?? 0.0,
+          if (_connectorCount >= 2)
+            double.tryParse(dcUnderVoltCtrl2.text.trim()) ?? 0.0,
+        ],
+        "DCMaxCurrent": [
           int.tryParse(dcOverCurrCtrl1.text.trim()) ?? 0,
           if (_connectorCount >= 2)
             int.tryParse(dcOverCurrCtrl2.text.trim()) ?? 0,
         ],
+        "DCMinCurrent": [
+          int.tryParse(dcMinCurrCtrl1.text.trim()) ?? 0,
+          if (_connectorCount >= 2)
+            int.tryParse(dcMinCurrCtrl2.text.trim()) ?? 0,
+        ],
+        "DCMaxPower": [
+          double.tryParse(dcMaxPowerCtrl1.text.trim()) ?? 0.0,
+          if (_connectorCount >= 2)
+            double.tryParse(dcMaxPowerCtrl2.text.trim()) ?? 0.0,
+        ],
+        "DCMaxEnergy": [
+          double.tryParse(dcMaxEnergyCtrl1.text.trim()) ?? 0.0,
+          if (_connectorCount >= 2)
+            double.tryParse(dcMaxEnergyCtrl2.text.trim()) ?? 0.0,
+        ],
+        // Commented out for now — uncomment when Max/Min Temperature is needed.
+        // "DCMaxTemperature": [
+        //   double.tryParse(dcMaxTempCtrl1.text.trim()) ?? 0.0,
+        //   if (_connectorCount >= 2)
+        //     double.tryParse(dcMaxTempCtrl2.text.trim()) ?? 0.0,
+        // ],
+        // "DCMinTemperature": [
+        //   double.tryParse(dcMinTempCtrl1.text.trim()) ?? 0.0,
+        //   if (_connectorCount >= 2)
+        //     double.tryParse(dcMinTempCtrl2.text.trim()) ?? 0.0,
+        // ],
       };
 
   Map<String, dynamic> _buildPowerModuleMap() => {
@@ -1174,8 +908,27 @@ class _EvseDetailsScreenState extends State<EvseDetailsScreen>
       if (!mounted) return;
       if (data.isNotEmpty) {
         debugPrint("========== INITIAL LOAD ==========");
+        debugPrint("NumberOfPowerModules = ${data["NumberOfPowerModules"]}");
+        debugPrint("NumberOfConnectors = ${data["NumberOfConnectors"]}");
+        debugPrint("NumberOfMergers = ${data["NumberOfMergers"]}");
+
         debugPrint("Has PowerModule1: ${data.containsKey("PowerModule1")}");
         debugPrint("PowerModule1 = ${jsonEncode(data["PowerModule1"])}");
+
+        debugPrint("Has MergerMap: ${data.containsKey("MergerMap")}");
+        debugPrint("MergerMap = ${jsonEncode(data["MergerMap"])}");
+
+        debugPrint("Has mergerMap: ${data.containsKey("mergerMap")}");
+        debugPrint("mergerMap = ${jsonEncode(data["mergerMap"])}");
+
+        debugPrint("Has MuxMap: ${data.containsKey("MuxMap")}");
+        debugPrint("MuxMap = ${jsonEncode(data["MuxMap"])}");
+
+        debugPrint("Has muxMap: ${data.containsKey("muxMap")}");
+        debugPrint("muxMap = ${jsonEncode(data["muxMap"])}");
+
+        debugPrint("Configuration keys = ${data.keys.toList()}");
+        debugPrint("================================");
         setState(() => _applyData(data));
         await _saveLocally(data); // Save to local storage
       }
@@ -1255,6 +1008,7 @@ class _EvseDetailsScreenState extends State<EvseDetailsScreen>
       displaysCtrl,
       connectorsCtrl,
       powerModulesCtrl,
+      mergersCtrl,
       dcOverVoltCtrl1,
       dcOverVoltCtrl2,
       acOverVoltCtrl,
@@ -1265,6 +1019,13 @@ class _EvseDetailsScreenState extends State<EvseDetailsScreen>
       dcOverCurrCtrl2,
       acOverCurrCtrl,
       overTempCtrl,
+      dcMinCurrCtrl1,
+      dcMinCurrCtrl2,
+      dcMaxPowerCtrl1,
+      dcMaxPowerCtrl2,
+      dcMaxEnergyCtrl1,
+      dcMaxEnergyCtrl2,
+      // dcMaxTempCtrl1, dcMaxTempCtrl2, dcMinTempCtrl1, dcMinTempCtrl2,
       otaURLCtrl,
       diagnosticURLCtrl,
     ]) {
@@ -1570,6 +1331,32 @@ class _EvseDetailsScreenState extends State<EvseDetailsScreen>
     }
   }
 
+  Future<void> _startCharging() async {
+    final ok =
+        await _confirm("Start Charging", "Start the charging session now?");
+    if (!ok) return;
+    try {
+      // ⚠️ Confirm exact command string with company — placeholder for now.
+      await BleService.instance.sendCommand(widget.deviceId, "START_CHARGING");
+      if (mounted) _snack("Start command sent");
+    } catch (e) {
+      debugPrint("❌ $e");
+    }
+  }
+
+  Future<void> _stopCharging() async {
+    final ok =
+        await _confirm("Stop Charging", "Stop the charging session now?");
+    if (!ok) return;
+    try {
+      // ⚠️ Confirm exact command string with company — placeholder for now.
+      await BleService.instance.sendCommand(widget.deviceId, "STOP_CHARGING");
+      if (mounted) _snack("Stop command sent");
+    } catch (e) {
+      debugPrint("❌ $e");
+    }
+  }
+
   Future<bool> _confirm(String title, String body,
       {bool destructive = false}) async {
     return await showDialog<bool>(
@@ -1605,510 +1392,131 @@ class _EvseDetailsScreenState extends State<EvseDetailsScreen>
   // ================================================================
   // UI HELPERS
   // ================================================================
-  Widget _section(String title) => Padding(
-        padding: const EdgeInsets.fromLTRB(16, 20, 16, 8),
-        child: Text(title.toUpperCase(),
-            style: const TextStyle(
-                fontSize: 11,
-                fontWeight: FontWeight.w700,
-                color: AppColors.primary,
-                letterSpacing: 1.2)),
-      );
+  Widget _section(String title) => w.sectionHeader(title);
 
-  Widget _row(String label, String value) => Container(
-        color: _surface,
-        child: Column(children: [
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-            child: Row(children: [
-              Expanded(
-                  flex: 4,
-                  child: Text(label,
-                      style: TextStyle(fontSize: 13, color: _textSecondary))),
-              Expanded(
-                  flex: 6,
-                  child: Text(
-                    value.isEmpty ? "--" : value,
-                    textAlign: TextAlign.right,
-                    style: TextStyle(
-                        fontSize: 14,
-                        fontWeight: FontWeight.w600,
-                        color: value.isEmpty ? _textSecondary : _textPrimary),
-                  )),
-            ]),
-          ),
-          Divider(height: 1, color: _border),
-        ]),
-      );
+  Widget _row(String label, String value) => w.infoRow(label, value,
+      surface: _surface,
+      border: _border,
+      textPrimary: _textPrimary,
+      textSecondary: _textSecondary);
 
-  Widget _boolRow(String label, bool value) => Container(
-        color: _surface,
-        child: Column(
-          children: [
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-              child: Row(
-                children: [
-                  Expanded(
-                    child: Text(
-                      label,
-                      style: TextStyle(
-                        fontSize: 13,
-                        color: _textSecondary,
-                      ),
-                    ),
-                  ),
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 10,
-                      vertical: 4,
-                    ),
-                    decoration: BoxDecoration(
-                      color: value
-                          ? AppColors.success.withOpacity(0.12)
-                          : AppColors.error.withOpacity(0.10),
-                      borderRadius: BorderRadius.circular(20),
-                    ),
-                    child: Text(
-                      value ? "Available" : "Unavailable",
-                      style: TextStyle(
-                        fontSize: 12,
-                        fontWeight: FontWeight.w600,
-                        color: value ? AppColors.success : AppColors.error,
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            Divider(height: 1, color: _border),
-          ],
-        ),
-      );
+  Widget _boolRow(String label, bool value) => w.boolStatusChipRow(label, value,
+      surface: _surface, border: _border, textSecondary: _textSecondary);
 
-  Widget _statusRow(String label, bool value) => Container(
-        color: _surface,
-        child: Column(
-          children: [
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-              child: Row(
-                children: [
-                  Expanded(
-                    child: Text(
-                      label,
-                      style: TextStyle(
-                        fontSize: 13,
-                        color: _textSecondary,
-                      ),
-                    ),
-                  ),
-                  Container(
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
-                    decoration: BoxDecoration(
-                      color: value
-                          ? AppColors.success.withOpacity(0.12)
-                          : AppColors.error.withOpacity(0.10),
-                      borderRadius: BorderRadius.circular(20),
-                    ),
-                    child: Text(
-                      value ? "Enabled" : "Disabled",
-                      style: TextStyle(
-                        color: value ? AppColors.success : AppColors.error,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            Divider(height: 1, color: _border),
-          ],
-        ),
-      );
+  Widget _statusRow(String label, bool value) =>
+      w.boolStatusChipRow(label, value,
+          surface: _surface,
+          border: _border,
+          textSecondary: _textSecondary,
+          onLabel: "Enabled",
+          offLabel: "Disabled");
 
-  Widget _pmStatusRow(bool value) => Container(
-        color: _surface,
-        child: Column(
-          children: [
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-              child: Row(
-                children: [
-                  Expanded(
-                    child: Text(
-                      "Status",
-                      style: TextStyle(
-                        fontSize: 13,
-                        color: _textSecondary,
-                      ),
-                    ),
-                  ),
-                  Container(
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
-                    decoration: BoxDecoration(
-                      color: value
-                          ? AppColors.success.withOpacity(0.12)
-                          : AppColors.error.withOpacity(0.10),
-                      borderRadius: BorderRadius.circular(20),
-                    ),
-                    child: Text(
-                      value ? "Available" : "Unavailable",
-                      style: TextStyle(
-                        fontSize: 12,
-                        fontWeight: FontWeight.w600,
-                        color: value ? AppColors.success : AppColors.error,
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            Divider(height: 1, color: _border),
-          ],
-        ),
-      );
+  Widget _pmStatusRow(bool value) => w.boolStatusChipRow("Status", value,
+      surface: _surface, border: _border, textSecondary: _textSecondary);
 
-  Widget _dropRow(String label, String value) => Container(
-        color: _surface,
-        child: Column(children: [
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-            child: Row(children: [
-              Expanded(
-                  flex: 4,
-                  child: Text(label,
-                      style: TextStyle(fontSize: 13, color: _textSecondary))),
-              Expanded(
-                  flex: 6,
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.end,
-                    children: [
-                      Flexible(
-                          child: Text(value,
-                              textAlign: TextAlign.right,
-                              style: TextStyle(
-                                  fontSize: 14,
-                                  fontWeight: FontWeight.w600,
-                                  color: _textPrimary))),
-                      const SizedBox(width: 4),
-                      Icon(Icons.keyboard_arrow_down_rounded,
-                          size: 18, color: _textSecondary),
-                    ],
-                  )),
-            ]),
-          ),
-          Divider(height: 1, color: _border),
-        ]),
-      );
+  Widget _dropRow(String label, String value) => w.dropRow(label, value,
+      surface: _surface,
+      border: _border,
+      textPrimary: _textPrimary,
+      textSecondary: _textSecondary);
 
-  Widget _field(
-    String label,
-    TextEditingController ctrl, {
-    TextInputType keyboard = TextInputType.text,
-    bool obscure = false,
-    bool readOnly = false,
-    TextInputAction action = TextInputAction.next,
-  }) {
-    final key = GlobalObjectKey(ctrl);
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 7),
-      child: Column(
-        key: key,
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(label,
-              style: TextStyle(
-                  fontSize: 11,
-                  fontWeight: FontWeight.w500,
-                  color: _textSecondary)),
-          const SizedBox(height: 6),
-          TextField(
-            controller: ctrl,
-            onChanged: (_) {
-              _markConfigChanged();
-            },
-            keyboardType: keyboard,
-            obscureText: obscure,
-            readOnly: readOnly,
-            textInputAction: action,
-            style: TextStyle(
-                fontSize: 14, color: readOnly ? _textSecondary : _textPrimary),
-            scrollPadding: const EdgeInsets.only(bottom: 400),
-            onTap: readOnly
-                ? null
-                : () {
-                    Future.delayed(const Duration(milliseconds: 500), () {
-                      if (key.currentContext != null) {
-                        Scrollable.ensureVisible(key.currentContext!,
-                            duration: const Duration(milliseconds: 300),
-                            curve: Curves.easeOut,
-                            alignment: 0.3);
-                      }
-                    });
-                  },
-            decoration: InputDecoration(
-              isDense: true,
-              filled: true,
-              fillColor: readOnly
-                  ? (_isDark ? AppColors.borderDark : AppColors.borderStrong)
-                  : (_isDark
-                      ? AppColors.surfaceVariantDark
-                      : AppColors.surfaceVariant),
-              contentPadding:
-                  const EdgeInsets.symmetric(horizontal: 14, vertical: 13),
-              border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(10),
-                  borderSide: BorderSide(color: _border)),
-              enabledBorder: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(10),
-                  borderSide: BorderSide(color: _border)),
-              focusedBorder: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(10),
-                  borderSide: BorderSide(
-                      color: readOnly ? _border : AppColors.primary,
-                      width: 1.5)),
-              suffixIcon: readOnly
-                  ? Icon(Icons.lock_outline, size: 16, color: _textSecondary)
-                  : null,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
+  Widget _field(String label, TextEditingController ctrl,
+          {TextInputType keyboard = TextInputType.text,
+          bool obscure = false,
+          bool readOnly = false,
+          TextInputAction action = TextInputAction.next}) =>
+      w.editableField(label, ctrl,
+          isDark: _isDark,
+          border: _border,
+          textPrimary: _textPrimary,
+          textSecondary: _textSecondary,
+          onDirty: _markConfigChanged,
+          keyboard: keyboard,
+          obscure: obscure,
+          readOnly: readOnly,
+          action: action);
 
-  // Integer field (for meter addresses)
   Widget _intField(String label, int value, ValueChanged<int> onChanged,
-      {bool readOnly = false}) {
-    final ctrl = TextEditingController(text: value.toString());
-    return _fieldRaw(label, ctrl,
-        readOnly: readOnly, keyboard: TextInputType.number, onChanged: (v) {
-      final n = int.tryParse(v);
-      if (n != null) onChanged(n);
-    });
-  }
+          {bool readOnly = false}) =>
+      w.intField(label, value, onChanged,
+          isDark: _isDark,
+          border: _border,
+          textPrimary: _textPrimary,
+          textSecondary: _textSecondary,
+          readOnly: readOnly);
 
-  Widget _fieldRaw(
-    String label,
-    TextEditingController ctrl, {
-    TextInputType keyboard = TextInputType.text,
-    bool readOnly = false,
-    ValueChanged<String>? onChanged,
-  }) {
-    final key = GlobalObjectKey(ctrl);
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 7),
-      child: Column(
-        key: key,
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(label,
-              style: TextStyle(
-                  fontSize: 11,
-                  fontWeight: FontWeight.w500,
-                  color: _textSecondary)),
-          const SizedBox(height: 6),
-          TextField(
-            controller: ctrl,
-            keyboardType: keyboard,
-            readOnly: readOnly,
-            onChanged: onChanged,
-            style: TextStyle(
-                fontSize: 14, color: readOnly ? _textSecondary : _textPrimary),
-            scrollPadding: const EdgeInsets.only(bottom: 400),
-            onTap: readOnly
-                ? null
-                : () {
-                    Future.delayed(const Duration(milliseconds: 500), () {
-                      if (key.currentContext != null) {
-                        Scrollable.ensureVisible(key.currentContext!,
-                            duration: const Duration(milliseconds: 300),
-                            curve: Curves.easeOut,
-                            alignment: 0.3);
-                      }
-                    });
-                  },
-            decoration: InputDecoration(
-              isDense: true,
-              filled: true,
-              fillColor: readOnly
-                  ? (_isDark ? AppColors.borderDark : AppColors.borderStrong)
-                  : (_isDark
-                      ? AppColors.surfaceVariantDark
-                      : AppColors.surfaceVariant),
-              contentPadding:
-                  const EdgeInsets.symmetric(horizontal: 14, vertical: 13),
-              border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(10),
-                  borderSide: BorderSide(color: _border)),
-              enabledBorder: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(10),
-                  borderSide: BorderSide(color: _border)),
-              focusedBorder: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(10),
-                  borderSide: BorderSide(
-                      color: readOnly ? _border : AppColors.primary,
-                      width: 1.5)),
-              suffixIcon: readOnly
-                  ? Icon(Icons.lock_outline, size: 16, color: _textSecondary)
-                  : null,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
+  Widget _fieldRaw(String label, TextEditingController ctrl,
+          {TextInputType keyboard = TextInputType.text,
+          bool readOnly = false,
+          ValueChanged<String>? onChanged}) =>
+      w.rawField(label, ctrl,
+          isDark: _isDark,
+          border: _border,
+          textPrimary: _textPrimary,
+          textSecondary: _textSecondary,
+          keyboard: keyboard,
+          readOnly: readOnly,
+          onChanged: onChanged);
 
   Widget _dropEdit<T>(String label, T value, Map<T, String> opts,
           ValueChanged<T> onChanged) =>
-      Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 7),
-        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Text(label,
-              style: TextStyle(
-                  fontSize: 11,
-                  fontWeight: FontWeight.w500,
-                  color: _textSecondary)),
-          const SizedBox(height: 6),
-          Container(
-            decoration: BoxDecoration(
-              color: _isDark
-                  ? AppColors.surfaceVariantDark
-                  : AppColors.surfaceVariant,
-              borderRadius: BorderRadius.circular(10),
-              border: Border.all(color: _border),
-            ),
-            padding: const EdgeInsets.symmetric(horizontal: 12),
-            child: DropdownButtonHideUnderline(
-              child: DropdownButton<T>(
-                value: value,
-                isExpanded: true,
-                dropdownColor: _surface,
-                style: TextStyle(fontSize: 14, color: _textPrimary),
-                items: opts.entries
-                    .map((e) =>
-                        DropdownMenuItem(value: e.key, child: Text(e.value)))
-                    .toList(),
-                onChanged: (v) {
-                  if (v == null) return;
-
-                  setState(() {
-                    onChanged(v);
-                  });
-
-                  _markConfigChanged();
-                },
-              ),
-            ),
-          ),
-        ]),
-      );
+      w.dropEdit<T>(label, value, opts, onChanged,
+          isDark: _isDark,
+          border: _border,
+          textPrimary: _textPrimary,
+          textSecondary: _textSecondary,
+          surface: _surface,
+          onDirty: _markConfigChanged);
 
   Widget _strDropEdit(String label, String value, List<String> opts,
           ValueChanged<String> onChanged) =>
       _dropEdit<String>(label, value, {for (final o in opts) o: o}, onChanged);
 
   Widget _toggle(String label, bool value, ValueChanged<bool> onChanged) =>
-      Container(
-        color: Colors.transparent,
-        child: Column(children: [
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-            child: Row(children: [
-              Expanded(
-                  child: Text(label,
-                      style: TextStyle(fontSize: 13, color: _textSecondary))),
-              GestureDetector(
-                onTap: _editMode
-                    ? () {
-                        setState(() {
-                          onChanged(!value);
-                        });
-
-                        _markConfigChanged();
-                      }
-                    : null,
-                child: AnimatedContainer(
-                  duration: const Duration(milliseconds: 200),
-                  width: 52,
-                  height: 28,
-                  decoration: BoxDecoration(
-                    borderRadius: BorderRadius.circular(14),
-                    color: value
-                        ? AppColors.success
-                        : (_isDark
-                            ? AppColors.borderDark
-                            : AppColors.borderStrong),
-                  ),
-                  child: Stack(children: [
-                    AnimatedPositioned(
-                      duration: const Duration(milliseconds: 200),
-                      left: value ? 26 : 2,
-                      top: 2,
-                      child: Container(
-                          width: 24,
-                          height: 24,
-                          decoration: const BoxDecoration(
-                              shape: BoxShape.circle, color: Colors.white)),
-                    ),
-                  ]),
-                ),
-              ),
-              const SizedBox(width: 8),
-              Text(value ? "ON" : "OFF",
-                  style: TextStyle(
-                      fontSize: 12,
-                      fontWeight: FontWeight.w600,
-                      color: value ? AppColors.success : _textSecondary)),
-            ]),
-          ),
-          Divider(height: 1, color: _border),
-        ]),
-      );
+      w.toggleRow(label, value, onChanged,
+          editMode: _editMode,
+          border: _border,
+          textSecondary: _textSecondary,
+          onDirty: _markConfigChanged);
 
   Widget _checkEdit(String label, bool value, ValueChanged<bool> onChanged) =>
-      Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-        child: Row(children: [
-          Expanded(
-              child: Text(label,
-                  style: TextStyle(fontSize: 13, color: _textSecondary))),
-          Checkbox(
-            value: value,
-            onChanged: _editMode
-                ? (bool? v) {
-                    if (v == null) return;
-                    setState(() {
-                      onChanged(v);
-                    });
-                    _markConfigChanged();
-                  }
-                : null,
-            activeColor: AppColors.primary,
-          ),
-        ]),
-      );
+      w.checkEditRow(label, value, onChanged,
+          editMode: _editMode,
+          textSecondary: _textSecondary,
+          onDirty: _markConfigChanged);
 
   Widget _actionBtn(
           String label, IconData icon, Color color, VoidCallback fn) =>
-      Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
-        child: OutlinedButton.icon(
-          icon: Icon(icon, size: 18, color: color),
-          label: Text(label, style: TextStyle(color: color)),
-          style: OutlinedButton.styleFrom(
-            side: BorderSide(color: color),
-            shape:
-                RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-            padding: const EdgeInsets.symmetric(vertical: 14),
-          ),
-          onPressed: fn,
-        ),
-      );
+      w.actionButton(label, icon, color, fn);
 
+  Widget _miniIntField(String label, int value, ValueChanged<int> onChanged,
+          {bool readOnly = false}) =>
+      w.miniIntField(label, value, onChanged,
+          isDark: _isDark,
+          border: _border,
+          textPrimary: _textPrimary,
+          textSecondary: _textSecondary,
+          surface: _surface,
+          readOnly: readOnly);
+
+  Widget _miniFloatField(String label, TextEditingController ctrl) =>
+      w.miniFloatField(label, ctrl,
+          border: _border,
+          textPrimary: _textPrimary,
+          textSecondary: _textSecondary,
+          surface: _surface,
+          onDirty: _markPowerModuleChanged);
+
+  Widget _miniDropEdit<T>(
+          String label, T value, Map<T, String> opts, ValueChanged<T> onChanged,
+          {bool readOnly = false}) =>
+      w.miniDropEdit<T>(label, value, opts, onChanged,
+          isDark: _isDark,
+          border: _border,
+          textPrimary: _textPrimary,
+          textSecondary: _textSecondary,
+          surface: _surface,
+          readOnly: readOnly);
   // ================================================================
   // TABS
   // ================================================================
@@ -2292,44 +1700,95 @@ class _EvseDetailsScreenState extends State<EvseDetailsScreen>
           ),
           _section("Connector 1"),
           _field(
-            "DC Under Voltage",
-            dcUnderVoltCtrl1,
-            keyboard: const TextInputType.numberWithOptions(decimal: true),
-          ),
-          _field(
-            "DC Over Voltage",
+            "Max Voltage",
             dcOverVoltCtrl1,
             keyboard: const TextInputType.numberWithOptions(decimal: true),
           ),
           _field(
-            "DC Over Current",
+            "Min Voltage",
+            dcUnderVoltCtrl1,
+            keyboard: const TextInputType.numberWithOptions(decimal: true),
+          ),
+          _field(
+            "Max Current",
             dcOverCurrCtrl1,
             keyboard: TextInputType.number,
           ),
+          _field(
+            "Min Current",
+            dcMinCurrCtrl1,
+            keyboard: TextInputType.number,
+          ),
+          _field(
+            "Max Power",
+            dcMaxPowerCtrl1,
+            keyboard: const TextInputType.numberWithOptions(decimal: true),
+          ),
+          _field(
+            "Max Energy",
+            dcMaxEnergyCtrl1,
+            keyboard: const TextInputType.numberWithOptions(decimal: true),
+          ),
+          // Commented out for now — uncomment when Max/Min Temperature is needed.
+          // _field(
+          //   "Max Temperature",
+          //   dcMaxTempCtrl1,
+          //   keyboard: const TextInputType.numberWithOptions(decimal: true),
+          // ),
+          // _field(
+          //   "Min Temperature",
+          //   dcMinTempCtrl1,
+          //   keyboard: const TextInputType.numberWithOptions(decimal: true),
+          // ),
           if (_connectorCount >= 2) ...[
             _section("Connector 2"),
             _field(
-              "DC Under Voltage",
-              dcUnderVoltCtrl2,
-              keyboard: const TextInputType.numberWithOptions(decimal: true),
-            ),
-            _field(
-              "DC Over Voltage",
+              "Max Voltage",
               dcOverVoltCtrl2,
               keyboard: const TextInputType.numberWithOptions(decimal: true),
             ),
             _field(
-              "DC Over Current",
+              "Min Voltage",
+              dcUnderVoltCtrl2,
+              keyboard: const TextInputType.numberWithOptions(decimal: true),
+            ),
+            _field(
+              "Max Current",
               dcOverCurrCtrl2,
               keyboard: TextInputType.number,
             ),
+            _field(
+              "Min Current",
+              dcMinCurrCtrl2,
+              keyboard: TextInputType.number,
+            ),
+            _field(
+              "Max Power",
+              dcMaxPowerCtrl2,
+              keyboard: const TextInputType.numberWithOptions(decimal: true),
+            ),
+            _field(
+              "Max Energy",
+              dcMaxEnergyCtrl2,
+              keyboard: const TextInputType.numberWithOptions(decimal: true),
+            ),
+            // Commented out for now — uncomment when Max/Min Temperature is needed.
+            // _field(
+            //   "Max Temperature",
+            //   dcMaxTempCtrl2,
+            //   keyboard: const TextInputType.numberWithOptions(decimal: true),
+            // ),
+            // _field(
+            //   "Min Temperature",
+            //   dcMinTempCtrl2,
+            //   keyboard: const TextInputType.numberWithOptions(decimal: true),
+            // ),
           ],
           _section("Power Modules"),
-          _field(
-            "Number of Power Modules",
-            powerModulesCtrl,
-            keyboard: TextInputType.number,
-          ),
+          _field("Number of Power Modules", powerModulesCtrl,
+              keyboard: TextInputType.number),
+          _field("Number of Mergers", mergersCtrl,
+              keyboard: TextInputType.number, action: TextInputAction.done),
           ...List.generate(8, (i) {
             final pmNum = i + 1;
             final numPM = int.tryParse(powerModulesCtrl.text.trim()) ?? 0;
@@ -2423,10 +1882,18 @@ class _EvseDetailsScreenState extends State<EvseDetailsScreen>
             );
           }),
           _section("Actions"),
-          _actionBtn("Restart Charger", Icons.restart_alt_rounded, _textPrimary,
-              _restart),
-          _actionBtn("Factory Reset", Icons.restore_rounded, AppColors.error,
-              _factoryReset),
+          _actionBtn(
+            "Start Charging",
+            Icons.play_arrow_rounded,
+            AppColors.success,
+            _startCharging,
+          ),
+          _actionBtn(
+            "Stop Charging",
+            Icons.stop_rounded,
+            AppColors.warning,
+            _stopCharging,
+          ),
         ],
       );
     }
@@ -2442,17 +1909,30 @@ class _EvseDetailsScreenState extends State<EvseDetailsScreen>
       _section("Connector Configuration"),
       _row("Number of Connectors", connectorsCtrl.text),
       _section("Connector 1"),
-      _row("DC Under Voltage", dcUnderVoltCtrl1.text),
-      _row("DC Over Voltage", dcOverVoltCtrl1.text),
-      _row("DC Over Current", dcOverCurrCtrl1.text),
+      _row("Max Voltage", dcOverVoltCtrl1.text),
+      _row("Min Voltage", dcUnderVoltCtrl1.text),
+      _row("Max Current", dcOverCurrCtrl1.text),
+      _row("Min Current", dcMinCurrCtrl1.text),
+      _row("Max Power", dcMaxPowerCtrl1.text),
+      _row("Max Energy", dcMaxEnergyCtrl1.text),
+      // Commented out for now — uncomment when Max/Min Temperature is needed.
+      // _row("Max Temperature", dcMaxTempCtrl1.text),
+      // _row("Min Temperature", dcMinTempCtrl1.text),
       if (_connectorCount >= 2) ...[
         _section("Connector 2"),
-        _row("DC Under Voltage", dcUnderVoltCtrl2.text),
-        _row("DC Over Voltage", dcOverVoltCtrl2.text),
-        _row("DC Over Current", dcOverCurrCtrl2.text),
+        _row("Max Voltage", dcOverVoltCtrl2.text),
+        _row("Min Voltage", dcUnderVoltCtrl2.text),
+        _row("Max Current", dcOverCurrCtrl2.text),
+        _row("Min Current", dcMinCurrCtrl2.text),
+        _row("Max Power", dcMaxPowerCtrl2.text),
+        _row("Max Energy", dcMaxEnergyCtrl2.text),
+        // Commented out for now — uncomment when Max/Min Temperature is needed.
+        // _row("Max Temperature", dcMaxTempCtrl2.text),
+        // _row("Min Temperature", dcMinTempCtrl2.text),
       ],
       _section("Power Modules"),
       _row("Number of Power Modules", powerModulesCtrl.text),
+      _row("Number of Mergers", mergersCtrl.text),
       ...List.generate(
         int.tryParse(powerModulesCtrl.text.trim()) ?? 0,
         (i) => Column(
@@ -2476,9 +1956,17 @@ class _EvseDetailsScreenState extends State<EvseDetailsScreen>
       ),
       _section("Actions"),
       _actionBtn(
-          "Restart Charger", Icons.restart_alt_rounded, _textPrimary, _restart),
-      _actionBtn("Factory Reset", Icons.restore_rounded, AppColors.error,
-          _factoryReset),
+        "Start Charging",
+        Icons.play_arrow_rounded,
+        AppColors.success,
+        _startCharging,
+      ),
+      _actionBtn(
+        "Stop Charging",
+        Icons.stop_rounded,
+        AppColors.warning,
+        _stopCharging,
+      ),
     ]);
   }
 
@@ -2488,20 +1976,32 @@ class _EvseDetailsScreenState extends State<EvseDetailsScreen>
 
     if (!_editMode) {
       return Padding(
-        padding: const EdgeInsets.only(left: 16, top: 8, bottom: 4),
-        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Text(title,
-              style: const TextStyle(
+        padding: const EdgeInsets.only(
+          top: 8,
+          bottom: 4,
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              child: Text(
+                title,
+                style: const TextStyle(
                   fontSize: 12,
                   fontWeight: FontWeight.w600,
-                  color: AppColors.primary)),
-          const SizedBox(height: 4),
-          _row("Module Addr", data.moduleAddress.toString()),
-          _row("Reg. Count", data.registerCount.toString()),
-          _row("Data Type", dataTypes[data.dataType] ?? ""),
-          _row("Word Order", wordOrders[data.wordOrder] ?? ""),
-          _row("Scale Exp", data.scaleExponent.toString()),
-        ]),
+                  color: AppColors.primary,
+                ),
+              ),
+            ),
+            const SizedBox(height: 4),
+            _row("Module Addr", data.moduleAddress.toString()),
+            _row("Reg. Count", data.registerCount.toString()),
+            _row("Data Type", dataTypes[data.dataType] ?? ""),
+            _row("Word Order", wordOrders[data.wordOrder] ?? ""),
+            _row("Scale Exp", data.scaleExponent.toString()),
+          ],
+        ),
       );
     }
 
@@ -2548,153 +2048,6 @@ class _EvseDetailsScreenState extends State<EvseDetailsScreen>
     );
   }
 
-  Widget _miniIntField(String label, int value, ValueChanged<int> onChanged,
-      {bool readOnly = false}) {
-    final ctrl = TextEditingController(text: value.toString());
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 3),
-      child: Row(children: [
-        SizedBox(
-            width: 72,
-            child: Text(label,
-                style: TextStyle(fontSize: 11, color: _textSecondary))),
-        Expanded(
-          child: SizedBox(
-            height: 32,
-            child: TextField(
-              controller: ctrl,
-              keyboardType: TextInputType.number,
-              readOnly: readOnly,
-              scrollPadding: const EdgeInsets.only(bottom: 400),
-              style: TextStyle(
-                  fontSize: 12,
-                  color: readOnly ? _textSecondary : _textPrimary),
-              onChanged: readOnly
-                  ? null
-                  : (v) {
-                      final n = int.tryParse(v);
-                      if (n != null) onChanged(n);
-                    },
-              decoration: InputDecoration(
-                isDense: true,
-                filled: true,
-                fillColor: readOnly
-                    ? (_isDark ? AppColors.borderDark : AppColors.borderStrong)
-                    : _surface,
-                contentPadding:
-                    const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-                border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(8),
-                    borderSide: BorderSide(color: _border)),
-                enabledBorder: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(8),
-                    borderSide: BorderSide(color: _border)),
-                focusedBorder: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(8),
-                    borderSide: BorderSide(
-                        color: readOnly ? _border : AppColors.primary,
-                        width: 1.5)),
-                suffixIcon: readOnly
-                    ? Icon(Icons.lock_outline, size: 14, color: _textSecondary)
-                    : null,
-              ),
-            ),
-          ),
-        ),
-      ]),
-    );
-  }
-
-  Widget _miniFloatField(String label, TextEditingController ctrl) => Padding(
-        padding: const EdgeInsets.symmetric(vertical: 3),
-        child: Row(children: [
-          SizedBox(
-              width: 72,
-              child: Text(label,
-                  style: TextStyle(fontSize: 11, color: _textSecondary))),
-          Expanded(
-            child: SizedBox(
-              height: 32,
-              child: TextField(
-                controller: ctrl,
-                onChanged: (_) {
-                  _markPowerModuleChanged();
-                },
-                keyboardType:
-                    const TextInputType.numberWithOptions(decimal: true),
-                scrollPadding: const EdgeInsets.only(bottom: 400),
-                style: TextStyle(fontSize: 12, color: _textPrimary),
-                decoration: InputDecoration(
-                  isDense: true,
-                  filled: true,
-                  fillColor: _surface,
-                  contentPadding:
-                      const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-                  border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(8),
-                      borderSide: BorderSide(color: _border)),
-                  enabledBorder: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(8),
-                      borderSide: BorderSide(color: _border)),
-                  focusedBorder: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(8),
-                      borderSide: const BorderSide(
-                          color: AppColors.primary, width: 1.5)),
-                ),
-              ),
-            ),
-          ),
-        ]),
-      );
-
-  Widget _miniDropEdit<T>(
-          String label, T value, Map<T, String> opts, ValueChanged<T> onChanged,
-          {bool readOnly = false}) =>
-      Padding(
-        padding: const EdgeInsets.symmetric(vertical: 3),
-        child: Row(children: [
-          SizedBox(
-              width: 72,
-              child: Text(label,
-                  style: TextStyle(fontSize: 11, color: _textSecondary))),
-          Expanded(
-            child: Container(
-              height: 32,
-              padding: const EdgeInsets.symmetric(horizontal: 8),
-              decoration: BoxDecoration(
-                color: readOnly
-                    ? (_isDark ? AppColors.borderDark : AppColors.borderStrong)
-                    : _surface,
-                borderRadius: BorderRadius.circular(8),
-                border: Border.all(color: _border),
-              ),
-              child: DropdownButtonHideUnderline(
-                child: DropdownButton<T>(
-                  value: value,
-                  isExpanded: true,
-                  isDense: true,
-                  dropdownColor: _surface,
-                  style: TextStyle(
-                      fontSize: 12,
-                      color: readOnly ? _textSecondary : _textPrimary),
-                  items: opts.entries
-                      .map((e) => DropdownMenuItem(
-                          value: e.key,
-                          child: Text(e.value,
-                              style: TextStyle(
-                                  fontSize: 12, color: _textPrimary))))
-                      .toList(),
-                  onChanged: readOnly
-                      ? null
-                      : (v) {
-                          if (v != null) onChanged(v);
-                        },
-                ),
-              ),
-            ),
-          ),
-        ]),
-      );
   Widget _metersTab() {
     final connectors = _connectorCount;
     final isUserAC = acMeterType == 'User Defined';
@@ -2838,6 +2191,76 @@ class _EvseDetailsScreenState extends State<EvseDetailsScreen>
     ]);
   }
 
+  // ── Merger wiring — fixed hardware map, per company's firmware code.
+  // mergerMap[PM][Connector] -> merger index, or null = Direct Connected.
+  // ⚠️ Only Connector 1 and 2 are defined (from company's C++ snippet).
+  // Add more entries here once wiring data for additional connectors is given.
+  static const Map<int, Map<int, int?>> _mergerWiring = {
+    1: {
+      1: null,
+      2: null,
+      3: 1,
+      4: 1,
+      5: 2,
+      6: 2,
+      7: 3,
+      8: 3,
+    },
+    2: {
+      1: 1,
+      2: 1,
+      3: 2,
+      4: 2,
+      5: 3,
+      6: 3,
+      7: null,
+      8: null,
+    },
+  };
+
+  Widget _muxTab() {
+    final connectors = _connectorCount;
+    final numPM = int.tryParse(powerModulesCtrl.text.trim()) ?? 8;
+
+    if (connectors == 0) {
+      return Center(
+        child: Text(
+          "Set Number of Connectors in Hardware tab\nto see Mux mapping",
+          textAlign: TextAlign.center,
+          style: TextStyle(fontSize: 13, color: _textSecondary),
+        ),
+      );
+    }
+
+    return ListView(
+      padding: const EdgeInsets.only(bottom: 24),
+      children: [
+        _row("Power Modules", "8"),
+        _row("Connectors", "2"),
+        _row("Mergers", "3"),
+        for (int c = 1; c <= connectors; c++) ...[
+          _section("Connector $c"),
+          if (!_mergerWiring.containsKey(c))
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+              child: Text(
+                "No wiring data available for Connector $c yet.",
+                style: TextStyle(fontSize: 13, color: _textSecondary),
+              ),
+            )
+          else
+            for (int pm = 1; pm <= numPM; pm++)
+              _row(
+                "PM$pm",
+                _mergerWiring[c]?[pm] == null
+                    ? "Direct Connected"
+                    : "Merger ${_mergerWiring[c]![pm]}",
+              ),
+        ],
+      ],
+    );
+  }
+
   Widget _comingSoon(String name) => Center(
         child: Column(mainAxisSize: MainAxisSize.min, children: [
           Container(
@@ -2883,83 +2306,180 @@ class _EvseDetailsScreenState extends State<EvseDetailsScreen>
         if (mounted) Navigator.pop(context);
       },
       child: Scaffold(
-        backgroundColor: _bg,
+        backgroundColor: const Color(0xFF08141D),
         resizeToAvoidBottomInset: true,
         appBar: AppBar(
-          backgroundColor: _surface,
+          iconTheme: const IconThemeData(
+            color: Colors.white,
+          ),
+          backgroundColor: const Color(0xFF08141D),
+          toolbarHeight: 78,
+          centerTitle: false,
+          elevation: 0,
+          surfaceTintColor: Colors.transparent,
           leading: _editMode
               ? IconButton(
-                  icon: const Icon(Icons.arrow_back_rounded),
+                  splashRadius: 22,
+                  icon: const Icon(
+                    Icons.arrow_back_ios_new_rounded,
+                    size: 20,
+                    color: Colors.white,
+                  ),
                   onPressed: _returnToInfoMode,
                 )
               : null,
           // FIX: Use shorter title so it doesn't get truncated
-          title: Column(children: [
-            Text("EVSE Config",
-                style: TextStyle(
-                    fontSize: 15,
-                    fontWeight: FontWeight.w600,
-                    color: _textPrimary)),
-            Row(mainAxisSize: MainAxisSize.min, children: [
-              Container(
-                  width: 6,
-                  height: 6,
-                  decoration: const BoxDecoration(
-                      shape: BoxShape.circle, color: AppColors.success)),
-              const SizedBox(width: 4),
-              Text("Connected",
-                  style: TextStyle(fontSize: 10, color: _textSecondary)),
-            ]),
-          ]),
+          titleSpacing: 0,
+
+          title: SizedBox(
+            width: double.infinity,
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  "EVSE CONFIG",
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 20,
+                    fontWeight: FontWeight.w700,
+                    letterSpacing: 0.8,
+                    height: 1.1,
+                  ),
+                ),
+                const SizedBox(height: 6),
+                Row(
+                  children: [
+                    Container(
+                      width: 8,
+                      height: 8,
+                      decoration: const BoxDecoration(
+                        color: Color(0xFF22C55E),
+                        shape: BoxShape.circle,
+                      ),
+                    ),
+                    const SizedBox(width: 6),
+                    Text(
+                      "Connected",
+                      style: TextStyle(
+                        color: Colors.grey.shade400,
+                        fontSize: 11,
+                        fontWeight: FontWeight.w500,
+                        letterSpacing: 0.4,
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
           actions: [
-            // Theme toggle
-            IconButton(
-              icon: Icon(
-                  _isDark ? Icons.light_mode_rounded : Icons.dark_mode_rounded,
-                  size: 20,
-                  color: _textSecondary),
-              onPressed: () => EVSEApp.of(context)?.toggleTheme(),
-            ),
-            // Reset button
-            IconButton(
-              tooltip: "Reset to saved config",
-              icon: Icon(Icons.history_rounded,
-                  color: AppColors.warning, size: 22),
-              onPressed: _resetToSaved,
-            ),
-            // Disconnect
-            IconButton(
-              tooltip: "Disconnect",
-              icon: const Icon(Icons.bluetooth_disabled_rounded,
-                  color: AppColors.error, size: 22),
-              onPressed: _disconnecting ? null : _disconnect,
+            // Theme
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 2),
             ),
             // Edit / Save
             if (!_loading)
-              IconButton(
-                icon: Icon(
-                  _editMode ? Icons.save_rounded : Icons.edit_rounded,
-                  color: AppColors.primary,
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 2),
+                child: IconButton(
+                  icon: Icon(
+                    _editMode ? Icons.save_rounded : Icons.edit_rounded,
+                    color: AppColors.primary,
+                  ),
+                  onPressed: _saving
+                      ? null
+                      : () async {
+                          if (_editMode) {
+                            FocusScope.of(context).unfocus();
+                            await Future.delayed(
+                              const Duration(milliseconds: 200),
+                            );
+                            await _save();
+                          } else {
+                            setState(() => _editMode = true);
+                          }
+                        },
                 ),
-                onPressed: _saving
-                    ? null
-                    : () async {
-                        if (_editMode) {
-                          // Save button — stays in edit mode
-                          FocusScope.of(context).unfocus();
-                          await Future.delayed(
-                              const Duration(milliseconds: 200));
-                          await _save();
-                        } else {
-                          // Pencil icon — enter edit mode
-                          setState(() => _editMode = true);
-                        }
-                      },
               ),
+
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 2),
+              child: PopupMenuButton<String>(
+                icon: Icon(
+                  Icons.more_vert_rounded,
+                  color: _textSecondary,
+                ),
+                color: _surface,
+                onSelected: (value) {
+                  switch (value) {
+                    case 'cards':
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => CardManagementScreen(
+                            deviceId: widget.deviceId,
+                          ),
+                        ),
+                      );
+                      break;
+                    case 'reset':
+                      _resetToSaved();
+                      break;
+
+                    case 'disconnect':
+                      _disconnect();
+                      break;
+
+                    case 'restart':
+                      _restart();
+                      break;
+
+                    case 'factory':
+                      _factoryReset();
+                      break;
+                  }
+                },
+                itemBuilder: (context) => [
+                  const PopupMenuItem(
+                    value: 'cards',
+                    child: Row(
+                      children: [
+                        Icon(Icons.badge_outlined, size: 18),
+                        SizedBox(width: 10),
+                        Text("Card Management"),
+                      ],
+                    ),
+                  ),
+                  const PopupMenuItem(
+                    value: 'reset',
+                    child: Text('Reset Configuration'),
+                  ),
+                  const PopupMenuItem(
+                    value: 'disconnect',
+                    child: Text('Disconnect'),
+                  ),
+                  const PopupMenuItem(
+                    value: 'restart',
+                    child: Text('Restart Charger'),
+                  ),
+                  const PopupMenuItem(
+                    value: 'factory',
+                    child: Text('Factory Reset'),
+                  ),
+                ],
+              ),
+            ),
           ],
           bottom: TabBar(
             controller: _tabCtrl,
             isScrollable: true,
+            indicatorColor: AppColors.primary,
+            indicatorWeight: 3,
+            dividerColor: Colors.transparent,
+            labelColor: Colors.white,
+            unselectedLabelColor: Colors.grey,
+            indicatorSize: TabBarIndicatorSize.tab,
             tabAlignment: TabAlignment.start,
             tabs: const [
               Tab(
@@ -2981,12 +2501,52 @@ class _EvseDetailsScreenState extends State<EvseDetailsScreen>
         body: Stack(children: [
           if (_loading)
             Center(
-                child: Column(mainAxisSize: MainAxisSize.min, children: [
-              const CircularProgressIndicator(color: AppColors.primary),
-              const SizedBox(height: 16),
-              Text("Reading configuration...",
-                  style: TextStyle(fontSize: 13, color: _textSecondary)),
-            ]))
+              child: Container(
+                width: 260,
+                padding: const EdgeInsets.all(28),
+                decoration: BoxDecoration(
+                  color: _surface,
+                  borderRadius: BorderRadius.circular(24),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withOpacity(0.25),
+                      blurRadius: 20,
+                      offset: const Offset(0, 8),
+                    ),
+                  ],
+                ),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const SizedBox(
+                      width: 42,
+                      height: 42,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 3,
+                        color: AppColors.primary,
+                      ),
+                    ),
+                    const SizedBox(height: 22),
+                    Text(
+                      "Reading Configuration",
+                      style: TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w600,
+                        color: _textPrimary,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      "Please wait...",
+                      style: TextStyle(
+                        fontSize: 13,
+                        color: _textSecondary,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            )
           else
             GestureDetector(
               onTap: () => FocusScope.of(context).unfocus(),
@@ -3000,7 +2560,7 @@ class _EvseDetailsScreenState extends State<EvseDetailsScreen>
                   _metersTab(),
                   _otaTab(),
                   _comingSoon("OCPP"),
-                  _comingSoon("Mux"),
+                  _muxTab(),
                 ],
               ),
             ),
@@ -3009,15 +2569,49 @@ class _EvseDetailsScreenState extends State<EvseDetailsScreen>
               color: Colors.black.withOpacity(0.4),
               child: Center(
                   child: Container(
+                width: 260,
                 padding: const EdgeInsets.all(28),
                 decoration: BoxDecoration(
-                    color: _surface, borderRadius: BorderRadius.circular(20)),
-                child: Column(mainAxisSize: MainAxisSize.min, children: [
-                  const CircularProgressIndicator(color: AppColors.primary),
-                  const SizedBox(height: 16),
-                  Text("Saving configuration...",
-                      style: TextStyle(fontSize: 13, color: _textSecondary)),
-                ]),
+                  color: _surface,
+                  borderRadius: BorderRadius.circular(24),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withOpacity(0.25),
+                      blurRadius: 20,
+                      offset: const Offset(0, 8),
+                    ),
+                  ],
+                ),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const SizedBox(
+                      width: 42,
+                      height: 42,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 3,
+                        color: AppColors.primary,
+                      ),
+                    ),
+                    const SizedBox(height: 22),
+                    Text(
+                      "Saving Configuration",
+                      style: TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w600,
+                        color: _textPrimary,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      "Writing settings to charger...",
+                      style: TextStyle(
+                        fontSize: 13,
+                        color: _textSecondary,
+                      ),
+                    ),
+                  ],
+                ),
               )),
             ),
           if (_disconnecting)
@@ -3025,15 +2619,49 @@ class _EvseDetailsScreenState extends State<EvseDetailsScreen>
               color: Colors.black.withOpacity(0.4),
               child: Center(
                   child: Container(
+                width: 260,
                 padding: const EdgeInsets.all(28),
                 decoration: BoxDecoration(
-                    color: _surface, borderRadius: BorderRadius.circular(20)),
-                child: Column(mainAxisSize: MainAxisSize.min, children: [
-                  const CircularProgressIndicator(color: AppColors.error),
-                  const SizedBox(height: 16),
-                  Text("Disconnecting...",
-                      style: TextStyle(fontSize: 13, color: _textSecondary)),
-                ]),
+                  color: _surface,
+                  borderRadius: BorderRadius.circular(24),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withOpacity(0.25),
+                      blurRadius: 20,
+                      offset: const Offset(0, 8),
+                    ),
+                  ],
+                ),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const SizedBox(
+                      width: 42,
+                      height: 42,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 3,
+                        color: AppColors.error,
+                      ),
+                    ),
+                    const SizedBox(height: 22),
+                    Text(
+                      "Disconnecting",
+                      style: TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w600,
+                        color: _textPrimary,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      "Closing BLE connection...",
+                      style: TextStyle(
+                        fontSize: 13,
+                        color: _textSecondary,
+                      ),
+                    ),
+                  ],
+                ),
               )),
             ),
         ]),

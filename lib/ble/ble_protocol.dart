@@ -38,6 +38,11 @@ class Selection {
   static const int updateMeterConfig     = 12;
   static const int updateConnectorConfig = 13;
   static const int updatePowerModule     = 14;
+
+  // ⚠️ PLACEHOLDER — no real code assigned by firmware yet.
+  // MUST be replaced with real values once the company confirms them.
+  static const int requestCardList = 20;
+  static const int updateCardList  = 21;
 }
 
 class DataFormat {

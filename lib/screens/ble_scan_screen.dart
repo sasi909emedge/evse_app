@@ -8,7 +8,7 @@ import '../theme/app_colors.dart';
 import '../main.dart';
 import 'package:permission_handler/permission_handler.dart';
 
-// Only EMEDGE chargers are allowed
+// EMEDGE devices are prioritized in the scan list
 const String _kAllowedPrefix = 'EMEDGE';
 
 class BleScanScreen extends StatefulWidget {
@@ -22,8 +22,6 @@ class BleScanScreen extends StatefulWidget {
 class _BleScanScreenState extends State<BleScanScreen>
     with SingleTickerProviderStateMixin {
   final List<BleDevice> _devices = [];
-  final Set<String> _hiddenDevices = {};
-  int _hiddenCount = 0;
 
   StreamSubscription<BleDevice>? _scanSub;
   StreamSubscription<BleConnectionState>? _connSub;
@@ -79,8 +77,6 @@ class _BleScanScreenState extends State<BleScanScreen>
     _scanTimer?.cancel();
     setState(() {
       _devices.clear();
-      _hiddenDevices.clear();
-      _hiddenCount = 0;
       _selected = null;
       _scanning = true;
     });
@@ -88,19 +84,18 @@ class _BleScanScreenState extends State<BleScanScreen>
 
     _scanSub = BleService.instance.scanDevices().listen((d) {
       if (d.name.isEmpty) return;
-      final isEmedge = d.name.toUpperCase().startsWith(_kAllowedPrefix);
-      if (isEmedge) {
-        if (!_devices.any((x) => x.id == d.id)) {
-          if (mounted) setState(() => _devices.add(d));
-        }
-      } else {
-        if (_hiddenDevices.add(d.id)) {
-          if (mounted) {
-            setState(() {
-              _hiddenCount = _hiddenDevices.length;
-            });
-          }
-        }
+      if (_devices.any((x) => x.id == d.id)) return;
+      if (mounted) {
+        setState(() {
+          _devices.add(d);
+          // EMEDGE devices float to the top; others keep discovery order.
+          _devices.sort((a, b) {
+            final aE = a.name.toUpperCase().startsWith(_kAllowedPrefix);
+            final bE = b.name.toUpperCase().startsWith(_kAllowedPrefix);
+            if (aE == bE) return 0;
+            return aE ? -1 : 1;
+          });
+        });
       }
     }, onError: (_) => _stopScan());
 
@@ -142,12 +137,27 @@ class _BleScanScreenState extends State<BleScanScreen>
         _connTimer?.cancel();
         try {
           await BleService.instance.discoverServices(id);
+
+          // Check whether the connected device is an EMEDGE charger.
+          if (!BleService.instance.isGattReady(id)) {
+            debugPrint("❌ Selected device is not an EMEDGE charger");
+
+            BleService.instance.disconnect(id);
+
+            if (!mounted) return;
+            Navigator.pop(context);
+            _snack("Not an EMEDGE Charger", err: true);
+            return;
+          }
+
           if (!mounted) return;
           Navigator.pop(context);
           Navigator.push(
-              context,
-              MaterialPageRoute(
-                  builder: (_) => EvseDetailsScreen(deviceId: id)));
+            context,
+            MaterialPageRoute(
+              builder: (_) => EvseDetailsScreen(deviceId: id),
+            ),
+          );
         } catch (e) {
           _connTimer?.cancel();
           await _connSub?.cancel();
@@ -174,176 +184,227 @@ class _BleScanScreenState extends State<BleScanScreen>
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: _bg,
+      backgroundColor: const Color(0xFF08141D),
       appBar: widget.fromMenu
           ? null
           : AppBar(
-              backgroundColor: _surface,
-              title: Column(children: [
-                const Text("EMEDGE",
-                    style: TextStyle(
-                        fontSize: 16,
-                        fontWeight: FontWeight.w800,
-                        color: AppColors.primary,
-                        letterSpacing: 1.5)),
-                Text("MASTERCONTROLLER",
-                    style: TextStyle(
-                        fontSize: 9, color: _textSecondary, letterSpacing: 2)),
-              ]),
-              actions: [
-                IconButton(
-                  icon: Icon(
-                      _isDark
-                          ? Icons.light_mode_rounded
-                          : Icons.dark_mode_rounded,
-                      size: 20,
-                      color: _textSecondary),
-                  onPressed: () => EVSEApp.of(context)?.toggleTheme(),
-                ),
-              ],
-            ),
-      body: SafeArea(
-        child: Column(children: [
-          Expanded(
-            child: Column(children: [
-              const SizedBox(height: 32),
-
-              // Animated scan button
-              GestureDetector(
-                onTap: _scanning ? null : _scan,
-                child: AnimatedBuilder(
-                  animation: _anim,
-                  builder: (_, child) => Transform.scale(
-                      scale: _scanning ? _anim.value : 1.0, child: child),
-                  child: Stack(alignment: Alignment.center, children: [
-                    Container(
-                      width: 132,
-                      height: 132,
-                      decoration: BoxDecoration(
-                        shape: BoxShape.circle,
-                        border: Border.all(
-                            color: AppColors.primary.withOpacity(0.12),
-                            width: 1),
+              backgroundColor: const Color(0xFF08141D),
+              elevation: 0,
+              toolbarHeight: 72,
+              automaticallyImplyLeading: false,
+              titleSpacing: 18,
+              title: Row(
+                children: [
+                  Container(
+                    width: 42,
+                    height: 42,
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF112532),
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(
+                        color: AppColors.primary.withOpacity(.35),
                       ),
                     ),
-                    Container(
-                      width: 110,
-                      height: 110,
-                      decoration: BoxDecoration(
-                        shape: BoxShape.circle,
-                        border: Border.all(
-                            color: AppColors.primary.withOpacity(0.22),
-                            width: 1.5),
-                      ),
+                    child: const Icon(
+                      Icons.bluetooth_searching_rounded,
+                      color: AppColors.primary,
+                      size: 24,
                     ),
-                    Container(
-                      width: 88,
-                      height: 88,
-                      decoration: const BoxDecoration(
-                          shape: BoxShape.circle, color: AppColors.primary),
-                      child: Icon(
-                        _scanning
-                            ? Icons.bluetooth_searching_rounded
-                            : Icons.bluetooth_rounded,
+                  ),
+                  const SizedBox(width: 14),
+                  const Expanded(
+                    child: Text(
+                      "SCAN",
+                      style: TextStyle(
                         color: Colors.white,
-                        size: 36,
+                        fontSize: 24,
+                        fontWeight: FontWeight.bold,
+                        letterSpacing: 1.2,
                       ),
                     ),
-                  ]),
-                ),
+                  ),
+                  CircleAvatar(
+                    radius: 19,
+                    backgroundColor: const Color(0xFF1B3344),
+                    child: Icon(
+                      Icons.person,
+                      color: AppColors.primary,
+                      size: 22,
+                    ),
+                  ),
+                ],
               ),
+            ),
+      body: Container(
+        decoration: const BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+            colors: [
+              Color(0xFF08141D),
+              Color(0xFF0D1C26),
+              Color(0xFF08141D),
+            ],
+          ),
+        ),
+        child: SafeArea(
+          child: Column(children: [
+            Expanded(
+              child: Column(children: [
+                const SizedBox(height: 32),
 
-              const SizedBox(height: 14),
-              Text(
-                _scanning ? "Scanning..." : "Tap to scan",
-                style: const TextStyle(
-                    fontSize: 13,
-                    fontWeight: FontWeight.w600,
-                    color: AppColors.primary,
-                    letterSpacing: 0.4),
-              ),
-              Text(
-                _scanning
-                    ? "Looking for EMEDGE chargers..."
-                    : "Shows EMEDGE chargers only",
-                style: TextStyle(fontSize: 11, color: _textSecondary),
-              ),
-
-              const SizedBox(height: 20),
-
-              // Device list
-              Expanded(
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 16),
-                  child: _devices.isEmpty
-                      ? _empty()
-                      : Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Padding(
-                              padding:
-                                  const EdgeInsets.only(left: 4, bottom: 8),
-                              child: Text(
-                                "${_devices.length} EMEDGE charger"
-                                "${_devices.length > 1 ? 's' : ''} found",
-                                style: TextStyle(
-                                    fontSize: 11,
-                                    color: _textSecondary,
-                                    fontWeight: FontWeight.w500),
-                              ),
+                // Animated scan button
+                GestureDetector(
+                  onTap: _scanning ? null : _scan,
+                  child: AnimatedBuilder(
+                    animation: _anim,
+                    builder: (_, child) => Transform.scale(
+                        scale: _scanning ? _anim.value : 1.0, child: child),
+                    child: Stack(alignment: Alignment.center, children: [
+                      Container(
+                        width: 180,
+                        height: 180,
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          border: Border.all(
+                              color: AppColors.primary.withOpacity(0.12),
+                              width: 1),
+                        ),
+                      ),
+                      Container(
+                        width: 150,
+                        height: 150,
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          border: Border.all(
+                              color: AppColors.primary.withOpacity(0.22),
+                              width: 1.5),
+                        ),
+                      ),
+                      Container(
+                        width: 120,
+                        height: 120,
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          color: AppColors.primary,
+                          boxShadow: [
+                            BoxShadow(
+                              color: AppColors.primary.withOpacity(.45),
+                              blurRadius: 30,
+                              spreadRadius: 4,
                             ),
-                            Expanded(
-                              child: ListView.separated(
-                                itemCount: _devices.length,
-                                separatorBuilder: (_, __) =>
-                                    const SizedBox(height: 8),
-                                itemBuilder: (_, i) => _Tile(
-                                  device: _devices[i],
-                                  selected: _selected?.id == _devices[i].id,
-                                  onTap: () =>
-                                      setState(() => _selected = _devices[i]),
-                                ),
-                              ),
-                            ),
-                            if (_hiddenCount > 0)
-                              Padding(
-                                padding: const EdgeInsets.only(top: 6),
-                                child: Row(children: [
-                                  Icon(Icons.info_outline_rounded,
-                                      size: 13, color: _textSecondary),
-                                  const SizedBox(width: 4),
-                                  Text(
-                                    "$_hiddenCount non-EMEDGE device"
-                                    "${_hiddenCount > 1 ? 's' : ''} hidden",
-                                    style: TextStyle(
-                                        fontSize: 10, color: _textSecondary),
-                                  ),
-                                ]),
-                              ),
                           ],
                         ),
+                        child: Icon(
+                          _scanning
+                              ? Icons.bluetooth_searching_rounded
+                              : Icons.bluetooth_rounded,
+                          color: Colors.white,
+                          size: 36,
+                        ),
+                      ),
+                    ]),
+                  ),
                 ),
-              ),
-            ]),
-          ),
 
-          // Connect button
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
-            child: SizedBox(
-              width: double.infinity,
-              height: 50,
-              child: ElevatedButton(
-                onPressed: _selected == null ? null : _connect,
-                style: ElevatedButton.styleFrom(
-                  disabledBackgroundColor:
-                      _isDark ? AppColors.borderDark : AppColors.border,
+                const SizedBox(height: 14),
+                Text(
+                  _scanning ? "Scanning for Chargers" : "Start BLE Scan",
+                  style: const TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.bold,
+                    color: AppColors.primary,
+                    letterSpacing: 1,
+                  ),
                 ),
-                child: const Text("Connect"),
+                Text(
+                  _scanning
+                      ? "Looking for nearby BLE devices..."
+                      : "Shows all nearby BLE devices",
+                  style: TextStyle(fontSize: 11, color: _textSecondary),
+                ),
+
+                const SizedBox(height: 20),
+
+                // Device list
+                Expanded(
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 16),
+                    child: _devices.isEmpty
+                        ? _empty()
+                        : Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Padding(
+                                padding:
+                                    const EdgeInsets.only(left: 4, bottom: 8),
+                                child: Text(
+                                  "${_devices.length} device"
+                                  "${_devices.length > 1 ? 's' : ''} found",
+                                  style: TextStyle(
+                                      fontSize: 11,
+                                      color: _textSecondary,
+                                      fontWeight: FontWeight.w500),
+                                ),
+                              ),
+                              Expanded(
+                                child: ListView.separated(
+                                  itemCount: _devices.length,
+                                  separatorBuilder: (_, __) =>
+                                      const SizedBox(height: 8),
+                                  itemBuilder: (_, i) => _Tile(
+                                    device: _devices[i],
+                                    selected: _selected?.id == _devices[i].id,
+                                    onTap: () =>
+                                        setState(() => _selected = _devices[i]),
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                  ),
+                ),
+              ]),
+            ),
+
+            // Connect button
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
+              child: SizedBox(
+                width: double.infinity,
+                height: 50,
+                child: ElevatedButton(
+                  onPressed: _selected == null ? null : _connect,
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: AppColors.primary,
+                    foregroundColor: Colors.white,
+                    elevation: 0,
+                    minimumSize: const Size(double.infinity, 60),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(22),
+                    ),
+                    disabledBackgroundColor: const Color(0xFF243544),
+                  ),
+                  child: const Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Text(
+                        "CONNECT",
+                        style: TextStyle(
+                          fontWeight: FontWeight.bold,
+                          fontSize: 17,
+                          letterSpacing: 1.2,
+                        ),
+                      ),
+                      SizedBox(width: 8),
+                      Icon(Icons.arrow_forward_rounded),
+                    ],
+                  ),
+                ),
               ),
             ),
-          ),
-        ]),
+          ]),
+        ),
       ),
     );
   }
@@ -386,26 +447,29 @@ class _Tile extends StatelessWidget {
       onTap: onTap,
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 200),
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+        padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 16),
         decoration: BoxDecoration(
-          color: selected
-              ? AppColors.primary.withOpacity(isDark ? 0.12 : 0.07)
-              : (isDark ? AppColors.surfaceDark : AppColors.surface),
-          borderRadius: BorderRadius.circular(14),
+          color: selected ? const Color(0xFF132733) : const Color(0xFF101B24),
+          borderRadius: BorderRadius.circular(22),
           border: Border.all(
-            color: selected
-                ? AppColors.primary
-                : (isDark ? AppColors.borderDark : AppColors.border),
-            width: selected ? 1.5 : 0.5,
+            color: selected ? AppColors.primary : const Color(0xFF1F3443),
+            width: selected ? 1.6 : 1,
           ),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withOpacity(.35),
+              blurRadius: 18,
+              offset: const Offset(0, 8),
+            ),
+          ],
         ),
         child: Row(children: [
           Container(
-            width: 42,
-            height: 42,
+            width: 54,
+            height: 54,
             decoration: BoxDecoration(
-              color: AppColors.primary.withOpacity(0.12),
-              borderRadius: BorderRadius.circular(11),
+              color: const Color(0xFF18303E),
+              borderRadius: BorderRadius.circular(18),
             ),
             child: const Icon(Icons.ev_station_rounded,
                 color: AppColors.primary, size: 22),
@@ -415,37 +479,58 @@ class _Tile extends StatelessWidget {
             child:
                 Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
               Text(device.name,
-                  style: TextStyle(
-                      fontSize: 13,
-                      fontWeight: FontWeight.w600,
-                      color: isDark
-                          ? AppColors.textPrimaryDark
-                          : AppColors.textPrimary)),
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 18,
+                    fontWeight: FontWeight.bold,
+                  )),
               const SizedBox(height: 2),
-              Text(device.id,
-                  style: TextStyle(
-                      fontSize: 10,
-                      color: isDark
-                          ? AppColors.textSecondaryDark
-                          : AppColors.textSecondary)),
+              Text(
+                device.id,
+                style: const TextStyle(
+                  color: Color(0xFF90A0AD),
+                  fontSize: 10,
+                ),
+              ),
             ]),
           ),
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-            decoration: BoxDecoration(
-              color: AppColors.success.withOpacity(0.12),
-              borderRadius: BorderRadius.circular(6),
-            ),
-            child: const Text("EMEDGE",
+          Builder(builder: (_) {
+            final isEmedge = device.name.toUpperCase().startsWith('EMEDGE');
+            return Container(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
+              decoration: BoxDecoration(
+                color: isEmedge
+                    ? const Color(0xFF173A31)
+                    : const Color(0xFF2A2F36),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Text(
+                isEmedge ? "EMEDGE" : "OTHER",
                 style: TextStyle(
-                    fontSize: 8,
-                    fontWeight: FontWeight.w600,
-                    color: AppColors.success)),
-          ),
+                  color: isEmedge
+                      ? const Color(0xFF4BE47E)
+                      : const Color(0xFFB0B8C1),
+                  fontWeight: FontWeight.bold,
+                  fontSize: 11,
+                ),
+              ),
+            );
+          }),
           if (selected) ...[
             const SizedBox(width: 8),
-            const Icon(Icons.check_circle_rounded,
-                color: AppColors.primary, size: 20),
+            Container(
+              width: 28,
+              height: 28,
+              decoration: const BoxDecoration(
+                color: AppColors.primary,
+                shape: BoxShape.circle,
+              ),
+              child: const Icon(
+                Icons.check,
+                size: 18,
+                color: Colors.white,
+              ),
+            ),
           ],
         ]),
       ),

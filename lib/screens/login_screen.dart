@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
+import 'dart:convert';
 import '../theme/app_colors.dart';
 import '../main.dart';
 import 'home_screen.dart';
@@ -23,9 +25,6 @@ class _LoginScreenState extends State<LoginScreen> {
   bool _obscure = true;
   bool _loading = false;
   String? _error;
-
-  static const _validUser = 'emedge';
-  static const _validPass = 'emedge123';
 
   bool get _isDark => Theme.of(context).brightness == Brightness.dark;
   Color get _bg => _isDark ? AppColors.backgroundDark : AppColors.background;
@@ -88,22 +87,68 @@ class _LoginScreenState extends State<LoginScreen> {
 
   Future<void> _login() async {
     FocusScope.of(context).unfocus();
+
+    final username = _userCtrl.text.trim();
+    final password = _passCtrl.text;
+
+    if (username.isEmpty || password.isEmpty) {
+      setState(() {
+        _error = 'Please enter username and password';
+      });
+      return;
+    }
+
     setState(() {
       _loading = true;
       _error = null;
     });
-    await Future.delayed(const Duration(milliseconds: 600));
-    if (!mounted) return;
 
-    if (_userCtrl.text.trim() == _validUser && _passCtrl.text == _validPass) {
-      Navigator.pushReplacement(
-        context,
-        MaterialPageRoute(builder: (_) => const HomeScreen()),
+    try {
+      final response = await http.post(
+        Uri.parse('https://api.emedge.in/users/login'),
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: jsonEncode({
+          'username': username,
+          'password': password,
+        }),
       );
-    } else {
+
+      if (!mounted) return;
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+
+        if (data['validation'] == true) {
+          Navigator.pushReplacement(
+            context,
+            MaterialPageRoute(
+              builder: (_) => const HomeScreen(),
+            ),
+          );
+          return;
+        }
+
+        setState(() {
+          _loading = false;
+          _error = 'Invalid username or password';
+        });
+        return;
+      }
+
       setState(() {
         _loading = false;
-        _error = 'Invalid username or password';
+        _error = 'Login failed. Please try again.';
+      });
+    } catch (e) {
+      debugPrint('❌ Login API error: $e');
+
+      if (!mounted) return;
+
+      setState(() {
+        _loading = false;
+        _error = 'Unable to connect to server';
       });
     }
   }
@@ -111,7 +156,7 @@ class _LoginScreenState extends State<LoginScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: _bg,
+      backgroundColor: const Color(0xFF08141D),
       // KEY FIX: true — body shrinks when keyboard appears
       // SingleChildScrollView handles the rest
       resizeToAvoidBottomInset: true,
@@ -126,64 +171,97 @@ class _LoginScreenState extends State<LoginScreen> {
                 const SizedBox(height: 48),
 
                 // ── Logo ──────────────────────────────────────
-                Image.asset(
-                  'assets/icon/emc_icon.png',
-                  width: 72,
-                  height: 72,
-                  errorBuilder: (_, __, ___) => Container(
-                    width: 72,
-                    height: 72,
-                    decoration: BoxDecoration(
-                      color: AppColors.primary.withOpacity(0.1),
-                      borderRadius: BorderRadius.circular(18),
+                Container(
+                  width: 110,
+                  height: 110,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: const Color(0x2200D9FF),
+                    boxShadow: [
+                      BoxShadow(
+                        color: const Color(0x5500D9FF),
+                        blurRadius: 35,
+                        spreadRadius: 3,
+                      ),
+                    ],
+                  ),
+                  child: Padding(
+                    padding: const EdgeInsets.all(18),
+                    child: Image.asset(
+                      'assets/icon/emc_icon.png',
+                      fit: BoxFit.contain,
                     ),
-                    child: const Icon(Icons.bolt_rounded,
-                        color: AppColors.primary, size: 40),
                   ),
                 ),
-                const SizedBox(height: 16),
 
-                const Text("EMEDGE",
-                    style: TextStyle(
-                        fontSize: 26,
-                        fontWeight: FontWeight.w800,
-                        color: AppColors.primary,
-                        letterSpacing: 3)),
-                Text("MASTERCONTROLLER",
-                    style: TextStyle(
-                        fontSize: 10,
-                        fontWeight: FontWeight.w500,
-                        color: _textSecondary,
-                        letterSpacing: 3)),
+                const SizedBox(height: 24),
 
-                const SizedBox(height: 32),
+                const Text(
+                  "EMEDGE",
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 34,
+                    fontWeight: FontWeight.bold,
+                    letterSpacing: 4,
+                  ),
+                ),
+                Text(
+                  "MASTER CONTROLLER",
+                  style: TextStyle(
+                    color: Colors.white.withOpacity(.70),
+                    fontSize: 13,
+                    fontWeight: FontWeight.w500,
+                    letterSpacing: 4,
+                  ),
+                ),
+
+                const SizedBox(height: 36),
 
                 // ── Card ──────────────────────────────────────
                 Container(
-                  padding: const EdgeInsets.all(24),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 28,
+                    vertical: 30,
+                  ),
                   decoration: BoxDecoration(
-                    color: _surface,
-                    borderRadius: BorderRadius.circular(20),
-                    border: Border.all(color: _border),
+                    color: const Color(0xFF132430),
+                    borderRadius: BorderRadius.circular(28),
+                    border: Border.all(
+                      color: const Color(0x3300D9FF),
+                      width: 1.2,
+                    ),
                     boxShadow: [
                       BoxShadow(
-                          color: Colors.black.withOpacity(0.05),
-                          blurRadius: 20,
-                          offset: const Offset(0, 4))
+                        color: Colors.black.withOpacity(0.45),
+                        blurRadius: 30,
+                        offset: const Offset(0, 12),
+                      ),
+                      BoxShadow(
+                        color: const Color(0x2200D9FF),
+                        blurRadius: 20,
+                        spreadRadius: 1,
+                      ),
                     ],
                   ),
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text("Sign In",
-                          style: TextStyle(
-                              fontSize: 20,
-                              fontWeight: FontWeight.w700,
-                              color: _textPrimary)),
+                      Text(
+                        "Authenticate",
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 28,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
                       const SizedBox(height: 4),
-                      Text("Enter your credentials to continue",
-                          style:
-                              TextStyle(fontSize: 12, color: _textSecondary)),
+                      Text(
+                        "Sign in to access the EMEDGE Master Controller",
+                        style: TextStyle(
+                          color: Colors.white70,
+                          fontSize: 14,
+                        ),
+                      ),
                       const SizedBox(height: 24),
 
                       // ── Username ────────────────────────────
@@ -288,13 +366,29 @@ class _LoginScreenState extends State<LoginScreen> {
                           height: 50,
                           child: ElevatedButton(
                             onPressed: _loading ? null : _login,
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: AppColors.primary,
+                              foregroundColor: Colors.black,
+                              elevation: 12,
+                              minimumSize: const Size(double.infinity, 56),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(16),
+                              ),
+                            ),
                             child: _loading
                                 ? const SizedBox(
                                     width: 20,
                                     height: 20,
                                     child: CircularProgressIndicator(
                                         color: Colors.white, strokeWidth: 2))
-                                : const Text("Sign In"),
+                                : const Text(
+                                    "AUTHENTICATE",
+                                    style: TextStyle(
+                                      fontWeight: FontWeight.bold,
+                                      fontSize: 16,
+                                      letterSpacing: 1.2,
+                                    ),
+                                  ),
                           ),
                         ),
                       ),
@@ -305,26 +399,7 @@ class _LoginScreenState extends State<LoginScreen> {
                 const SizedBox(height: 24),
 
                 // ── Theme Toggle ────────────────────────────────
-                GestureDetector(
-                  onTap: () => EVSEApp.of(context)?.toggleTheme(),
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      Icon(
-                        _isDark
-                            ? Icons.light_mode_rounded
-                            : Icons.dark_mode_rounded,
-                        size: 16,
-                        color: _textSecondary,
-                      ),
-                      const SizedBox(width: 6),
-                      Text(
-                        _isDark ? "Switch to Light" : "Switch to Dark",
-                        style: TextStyle(fontSize: 12, color: _textSecondary),
-                      ),
-                    ],
-                  ),
-                ),
+
                 const SizedBox(height: 10),
                 Text("EMEDGE Systems Pvt. Ltd.",
                     style: TextStyle(fontSize: 11, color: _textSecondary)),

@@ -20,6 +20,7 @@ class BleServiceMobile extends BleServiceBase {
 
   final FlutterReactiveBle _ble = FlutterReactiveBle();
   final Map<String, bool> _gattReady = {};
+  final Map<String, bool> _emedgeDevice = {};
 
   Future<void> _operation = Future.value();
   StreamSubscription<List<int>>? _notifySub;
@@ -73,12 +74,30 @@ class BleServiceMobile extends BleServiceBase {
 
     await _ble.discoverAllServices(deviceId);
     final services = await _ble.getDiscoveredServices(deviceId);
+
+    bool isEmedge = false;
+
     for (final s in services) {
       debugPrint("📡 SERVICE: ${s.id}");
+
+      if (s.id.toString().toLowerCase() ==
+          EVSEConfig.serviceUuid.toString().toLowerCase()) {
+        isEmedge = true;
+      }
+
       for (final c in s.characteristics) {
         debugPrint("   └─ CHAR: ${c.id}");
       }
     }
+
+    _emedgeDevice[deviceId] = isEmedge;
+
+    if (!isEmedge) {
+      debugPrint("❌ NOT AN EMEDGE CHARGER: $deviceId");
+      return;
+    }
+
+    debugPrint("✅ EMEDGE CHARGER VERIFIED: $deviceId");
 
     try {
       // 515 = 512 packet + 3 ATT overhead
@@ -129,7 +148,7 @@ class BleServiceMobile extends BleServiceBase {
       debugPrint("✅ WRITE COMPLETE");
     });
   }
-
+  @override
   Future<void> writeTabJson(
       String deviceId, Map<String, dynamic> json, int selection) {
     return _queue(() async {
